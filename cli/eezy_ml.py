@@ -13,7 +13,89 @@ TEMPLATE_LIBRARIES = [
 ]
 
 
-def cmd_init(target_dir, use_venv=True):
+def find_project_dir():
+    """Return the directory containing init.py, starting from cwd upward."""
+    current = Path.cwd()
+    for directory in [current, *current.parents]:
+        if (directory / "init.py").exists():
+            return directory
+    return None
+
+
+def get_python(project_dir):
+    """Return the venv Python executable if present, otherwise fall back to sys.executable."""
+    venv_python = project_dir / ".venv" / "Scripts" / "python.exe"
+    if venv_python.exists():
+        return str(venv_python)
+    return sys.executable
+
+
+def cmd_run_init():
+    project_dir = find_project_dir()
+    if project_dir is None:
+        print("Error: Could not find init.py. Run 'eezy create <dir>' first.", file=sys.stderr)
+        sys.exit(1)
+    python = get_python(project_dir)
+    print(f"Running init.py in {project_dir} (python: {python})...")
+    result = subprocess.run([python, str(project_dir / "init.py")], cwd=project_dir)
+    sys.exit(result.returncode)
+
+
+def cmd_start():
+    project_dir = find_project_dir()
+    if project_dir is None:
+        print("Error: Could not find init.py. Run 'eezy create <dir>' first.", file=sys.stderr)
+        sys.exit(1)
+
+    model_path = project_dir / "model" / "model.joblib"
+    if not model_path.exists():
+        print(
+            "Error: Model not found. Perhaps, you haven't run 'eezy init' yet.\n"
+            "       Run 'eezy init' to download data and load/train the model first.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    python = get_python(project_dir)
+    print(f"Starting inference server from {project_dir} (python: {python})...")
+    server_proc = subprocess.Popen(
+        [python, str(project_dir / "server.py")],
+        cwd=project_dir,
+    )
+
+    import time
+    import urllib.request
+    import urllib.error
+
+    print("Waiting for server to be ready...")
+    for _ in range(20):
+        try:
+            urllib.request.urlopen("http://localhost:5000/health", timeout=1)
+            break
+        except (urllib.error.URLError, OSError):
+            time.sleep(0.5)
+    else:
+        print("Error: Server did not start in time.", file=sys.stderr)
+        server_proc.terminate()
+        sys.exit(1)
+
+    print("Server is ready. Running tests...\n")
+    test_result = subprocess.run(
+        [python, str(project_dir / "test.py")],
+        cwd=project_dir,
+    )
+
+    print(f"\nTest {'passed' if test_result.returncode == 0 else 'failed'}.")
+    print("Server is running. Press Ctrl+C to stop.")
+    try:
+        server_proc.wait()
+    except KeyboardInterrupt:
+        print("\nShutting down server...")
+        server_proc.terminate()
+        server_proc.wait()
+
+
+def cmd_create(target_dir, use_venv=True):
     repo_url = "https://github.com/not-ekalabya/eezy-ml.git"
 
     print("The following libraries will be available in the project:")
@@ -64,14 +146,21 @@ def main():
     parser = argparse.ArgumentParser(prog="eezy")
     subparsers = parser.add_subparsers(dest="command")
 
-    init_parser = subparsers.add_parser("init", help="Initialize a new eezy-ml project")
-    init_parser.add_argument("target_dir", help="Target directory name")
-    init_parser.add_argument("--no-venv", action="store_true", help="Skip virtual environment creation")
+    create_parser = subparsers.add_parser("create", help="Scaffold a new eezy-ml project from the template")
+    create_parser.add_argument("target_dir", help="Target directory name")
+    create_parser.add_argument("--no-venv", action="store_true", help="Skip virtual environment creation")
+
+    subparsers.add_parser("init", help="Download data and train the model (runs init.py)")
+    subparsers.add_parser("start", help="Start the inference server and run tests")
 
     args = parser.parse_args()
 
-    if args.command == "init":
-        cmd_init(args.target_dir, use_venv=not args.no_venv)
+    if args.command == "create":
+        cmd_create(args.target_dir, use_venv=not args.no_venv)
+    elif args.command == "init":
+        cmd_run_init()
+    elif args.command == "start":
+        cmd_start()
     else:
         parser.print_help()
         sys.exit(1)
