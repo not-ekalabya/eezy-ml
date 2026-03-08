@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "eezyml"
 version = "0.1.1"
@@ -5,3 +9,6 @@ requires-python = ">=3.9"
 
 [project.scripts]
 eezy = "eezy_ml:main"
+
+[tool.setuptools]
+py-modules = ["eezy_ml"]
