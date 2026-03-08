@@ -1,51 +1,77 @@
 import argparse
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
+import shutil
 
 
-def get_template_repo():
-    """Get the template directory path from the current git repo."""
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            capture_output=True,
-            text=True,
-            check=True
-        )
-        repo_root = Path(result.stdout.strip())
-        template_dir = repo_root / "template"
-        return str(template_dir)
-    except subprocess.CalledProcessError:
-        print("Error: Not in a git repository.", file=sys.stderr)
-        sys.exit(1)
+TEMPLATE_LIBRARIES = [
+    "scikit-learn==1.6.1",
+    "datasets==4.0.0",
+    "flask==3.1.3",
+]
 
 
-def cmd_init(args):
-    repo_url = args.repo
-    target_dir = args.directory or Path(repo_url.rstrip("/").split("/")[-1]).stem
+def cmd_init(target_dir, use_venv=True):
+    repo_url = "https://github.com/not-ekalabya/eezy-ml.git"
 
-    print(f"Cloning {repo_url} into {target_dir}...")
-    result = subprocess.run(["git", "clone", repo_url, target_dir])
-    if result.returncode != 0:
-        print("Error: git clone failed.", file=sys.stderr)
-        sys.exit(result.returncode)
+    print("The following libraries will be available in the project:")
+    for lib in TEMPLATE_LIBRARIES:
+        print(f"  - {lib}")
+    print()
+    print(f"Cloning /template from {repo_url} into {target_dir}...")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+
+        result = subprocess.run(["git", "clone", "--no-checkout", repo_url, tmp])
+        if result.returncode != 0:
+            print("Error: git clone failed.", file=sys.stderr)
+            sys.exit(result.returncode)
+
+        subprocess.run(["git", "-C", tmp, "config", "core.sparseCheckout", "true"], check=True)
+        (tmp_path / ".git" / "info" / "sparse-checkout").write_text("template/\n")
+        subprocess.run(["git", "-C", tmp, "checkout"], check=True)
+
+        template_src = tmp_path / "template"
+        target_path = Path(target_dir)
+        target_path.mkdir(parents=True, exist_ok=True)
+
+        for item in template_src.iterdir():
+            dest = target_path / item.name
+            if dest.exists():
+                shutil.rmtree(dest) if dest.is_dir() else dest.unlink()
+            shutil.copytree(item, dest) if item.is_dir() else shutil.copy2(item, dest)
+
     print(f"Project initialized in ./{target_dir}")
+
+    if use_venv:
+        venv_path = Path(target_dir) / ".venv"
+        print(f"\nCreating virtual environment at {venv_path}...")
+        subprocess.run([sys.executable, "-m", "venv", str(venv_path)], check=True)
+
+        pip = venv_path / "Scripts" / "pip.exe"
+        requirements = Path(target_dir) / "requirements.txt"
+        if requirements.exists():
+            print("Installing dependencies...")
+            subprocess.run([str(pip), "install", "-r", str(requirements)], check=True)
+
+        print(f"Virtual environment ready. Activate with: {venv_path}\\Scripts\\activate")
 
 
 def main():
     parser = argparse.ArgumentParser(prog="eezy")
     subparsers = parser.add_subparsers(dest="command")
 
-    init_parser = subparsers.add_parser("init", help="Initialize a project by cloning the template")
-    init_parser.add_argument("directory", nargs="?", help="Target directory name (defaults to 'template')")
+    init_parser = subparsers.add_parser("init", help="Initialize a new eezy-ml project")
+    init_parser.add_argument("target_dir", help="Target directory name")
+    init_parser.add_argument("--no-venv", action="store_true", help="Skip virtual environment creation")
 
     args = parser.parse_args()
 
     if args.command == "init":
-        repo_url = get_template_repo()
-        target_dir = args.directory or "template"
-        cmd_init(argparse.Namespace(repo=repo_url, directory=target_dir))
+        cmd_init(args.target_dir, use_venv=not args.no_venv)
     else:
         parser.print_help()
         sys.exit(1)

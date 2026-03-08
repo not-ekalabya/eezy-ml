@@ -8,3 +8,7 @@ template/model/
 
 cli/__pycache__/
 cli/eezyml.egg-info/
+
+# examples
+
+examples/scikit_learn_mnist/.venv/
