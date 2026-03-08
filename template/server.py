@@ -12,6 +12,10 @@ Request body for /predict:
     Batch:          {"features": [[<784 floats>], ...]}
 """
 
+import os
+import subprocess
+import sys
+
 from flask import Flask, request, jsonify
 from inference import predict, predict_batch
 
@@ -21,6 +25,27 @@ app = Flask(__name__)
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok"})
+
+
+@app.route("/test", methods=["GET"])
+def run_tests():
+    test_script = os.path.join(os.path.dirname(__file__), "test.py")
+    host = os.environ.get("SERVER_HOST", "0.0.0.0")
+    port = os.environ.get("SERVER_PORT", "5000")
+    server_url = f"http://127.0.0.1:{port}"
+
+    env = {**os.environ, "SERVER_URL": server_url}
+    result = subprocess.run(
+        [sys.executable, test_script],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=env,
+        cwd=os.path.dirname(__file__),
+    )
+    output = result.stdout + result.stderr
+    passed = result.returncode == 0
+    return jsonify({"passed": passed, "returncode": result.returncode, "output": output})
 
 
 @app.route("/predict", methods=["POST"])
@@ -46,4 +71,4 @@ if __name__ == "__main__":
     import os
     host = os.environ.get("SERVER_HOST", "0.0.0.0")
     port = int(os.environ.get("SERVER_PORT", 5000))
-    app.run(host=host, port=port)
+    app.run(host=host, port=port, threaded=True)
