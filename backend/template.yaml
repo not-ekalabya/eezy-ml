@@ -6,11 +6,35 @@ Resources:
   ApiFunction:
     Type: AWS::Serverless::Function
     Properties:
-      Handler: src/app.handler
+      Handler: app.handler
       Runtime: python3.12
-      CodeUri: .
+      CodeUri: src/
       MemorySize: 1024
-      Timeout: 3600
+      Timeout: 900
+
+      Environment:
+        Variables:
+          GH_PAT: ""
+
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - ec2:RunInstances
+                - ec2:DescribeInstances
+                - ec2:TerminateInstances
+                - ec2:CreateSecurityGroup
+                - ec2:AuthorizeSecurityGroupIngress
+                - ec2:DescribeSecurityGroups
+                - ec2:DescribeVpcs
+                - ec2:DescribeSubnets
+                - ec2:CreateTags
+              Resource: '*'
+            - Effect: Allow
+              Action:
+                - ssm:GetParameter
+              Resource: '*'
 
       Events:
         Api:

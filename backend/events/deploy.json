@@ -1,0 +1,7 @@
+{
+  "httpMethod": "POST",
+  "path": "/deploy",
+  "body": "{\"repo_url\": \"https://github.com/not-ekalabya/eezy-ml-test-repo\", \"instance_type\": \"t2.micro\"}",
+  "pathParameters": null,
+  "queryStringParameters": null
+}

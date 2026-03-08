@@ -1,0 +1,7 @@
+{
+  "httpMethod": "GET",
+  "path": "/instances",
+  "body": null,
+  "pathParameters": null,
+  "queryStringParameters": null
+}

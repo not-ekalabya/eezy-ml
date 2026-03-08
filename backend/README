@@ -1,0 +1,222 @@
+# eezy-ml Backend
+
+AWS SAM Lambda backend that deploys a private GitHub ML repo to an EC2 instance,
+builds it as a Docker container, and exposes a proxy for inference calls.
+
+---
+
+## Prerequisites
+
+- [AWS SAM CLI](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html)
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) (running)
+- AWS account with permissions for EC2, SSM, and Lambda
+- Python 3.12
+
+---
+
+## Local Development
+
+### 1. Configure credentials
+
+Create `backend/env.json` (gitignored):
+
+```json
+{
+  "ApiFunction": {
+    "GH_PAT": "<your-github-personal-access-token>"
+  }
+}
+```
+
+Create `backend/start-dev.ps1` (gitignored) with your AWS credentials:
+
+```powershell
+$env:AWS_ACCESS_KEY_ID     = "<your-access-key-id>"
+$env:AWS_SECRET_ACCESS_KEY = "<your-secret-access-key>"
+$env:AWS_DEFAULT_REGION    = "us-east-1"
+
+Set-Location $PSScriptRoot
+sam local start-api `
+    --env-vars "$PSScriptRoot\env.json" `
+    --skip-pull-image `
+    --template "$PSScriptRoot\.aws-sam\build\template.yaml"
+```
+
+> **Why this way?** SAM CLI filters `--env-vars` values that match AWS credential
+> patterns. Setting credentials as host shell environment variables before starting
+> SAM bypasses this filter — the Lambda container inherits them directly.
+
+### 2. Build
+
+```powershell
+cd backend
+sam build
+```
+
+### 3. Start local API
+
+```powershell
+cd backend
+.\start-dev.ps1      # Windows
+```
+
+The API is available at `http://localhost:3000`.
+
+---
+
+## API Endpoints
+
+### `GET /health`
+Returns `{"status": "ok"}`.
+
+---
+
+### `POST /deploy`
+Creates a new EC2 instance, clones the repo, builds the Docker container, and
+starts the Flask inference server.
+
+**Request body:**
+```json
+{
+  "repo_url":      "https://github.com/owner/repo",
+  "instance_type": "t2.micro"
+}
+```
+
+| Field           | Required | Default      | Notes |
+|----------------|----------|--------------|-------|
+| `repo_url`      | Yes      | —            | Must be a `https://github.com/` URL |
+| `instance_type` | No       | `t3.medium`  | See allowed types below |
+
+**Allowed instance types:**
+`t2.micro`, `t2.small`, `t2.medium`, `t2.large`,
+`t3.micro`, `t3.small`, `t3.medium`, `t3.large`,
+`t3a.micro`, `t3a.small`, `t3a.medium`, `t3a.large`,
+`m5.large`, `m5.xlarge`, `c5.large`, `c5.xlarge`
+
+**Response:**
+```json
+{
+  "instance_id": "i-0abc123...",
+  "status": "launching",
+  "message": "Instance is launching. Poll GET /status/<id> until service_status is 'ready'."
+}
+```
+
+> **Startup time:** Container setup (Docker build + model training via `eezy init`)
+> takes **10–30 minutes** depending on instance size. Poll `/status/<id>` until
+> `service_status` is `"ready"` before sending inference requests.
+
+---
+
+### `GET /instances`
+Lists all running eezy-ml instances.
+
+**Response:**
+```json
+{
+  "instances": [
+    {
+      "instance_id":    "i-0abc123...",
+      "state":          "running",
+      "public_ip":      "1.2.3.4",
+      "instance_type":  "t2.micro",
+      "name":           "eezy-ml-my-repo",
+      "repo_url":       "https://github.com/owner/repo",
+      "launch_time":    "2026-03-08T13:00:00+00:00"
+    }
+  ]
+}
+```
+
+---
+
+### `GET /status/{instance_id}`
+Returns the EC2 state and Flask service readiness.
+
+**Response:**
+```json
+{
+  "instance_id":    "i-0abc123...",
+  "state":          "running",
+  "public_ip":      "1.2.3.4",
+  "instance_type":  "t2.micro",
+  "service_status": "ready",
+  "inference_url":  "http://1.2.3.4:5000/predict"
+}
+```
+
+`service_status` values: `launching` → `starting` → `ready`
+
+---
+
+### `POST /predict/{instance_id}`
+Proxies an inference request to the Flask server running on the EC2 instance.
+
+**Request body** (forwarded directly to the model server):
+```json
+{
+  "features": [0.0, 0.1, ...]
+}
+```
+
+**Response** (from the model server):
+```json
+{ "prediction": "7" }
+```
+
+Returns `500` if the instance is not yet ready.
+
+---
+
+### `DELETE /terminate/{instance_id}`
+Terminates the EC2 instance.
+
+**Response:**
+```json
+{
+  "instance_id": "i-0abc123...",
+  "status": "terminating",
+  "message": "Instance i-0abc123... is being terminated."
+}
+```
+
+---
+
+## Deploying to AWS
+
+```powershell
+cd backend
+sam build
+sam deploy --guided
+```
+
+Follow the prompts. On first deploy, SAM creates a `samconfig.toml` so subsequent
+deploys only need `sam deploy`.
+
+In production, the `GH_PAT` should be stored in **AWS SSM Parameter Store** as a
+`SecureString` at `/eezy-ml/github-token` instead of an environment variable. The
+Lambda will automatically fall back to SSM if `GH_PAT` is not set.
+
+---
+
+## AWS Permissions Required
+
+The Lambda execution role (created automatically by SAM) needs:
+
+| Service | Actions |
+|---------|---------|
+| EC2 | `RunInstances`, `DescribeInstances`, `TerminateInstances`, `CreateSecurityGroup`, `AuthorizeSecurityGroupIngress`, `DescribeSecurityGroups`, `DescribeVpcs`, `CreateTags` |
+| SSM | `GetParameter` |
+
+These are declared in `template.yaml` and applied automatically on `sam deploy`.
+
+---
+
+## Security Notes
+
+- `env.json` and `start-dev.ps1` are **gitignored** — never commit credentials.
+- The EC2 security group opens port `5000` (inference) and `22` (SSH) to `0.0.0.0/0`.
+  Restrict the SSH CIDR in `utils.py` for production use.
+- Instance IDs are validated by regex before any AWS API call to prevent injection.
+- Only pre-approved instance types are accepted.

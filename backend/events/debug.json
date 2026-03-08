@@ -1,0 +1,7 @@
+{
+  "httpMethod": "GET",
+  "path": "/debug/env",
+  "body": null,
+  "pathParameters": null,
+  "queryStringParameters": null
+}
