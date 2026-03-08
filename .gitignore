@@ -1,0 +1,10 @@
+# template
+
+template/__pycache__/
+template/data/
+template/model/
+
+# cli
+
+cli/__pycache__/
+cli/eezyml.egg-info/
