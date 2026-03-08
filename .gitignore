@@ -8,6 +8,7 @@ template/model/
 
 cli/__pycache__/
 cli/eezyml.egg-info/
+cli/dist/
 
 # examples
 
