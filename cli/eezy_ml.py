@@ -5,7 +5,6 @@ import tempfile
 from pathlib import Path
 import shutil
 
-
 TEMPLATE_LIBRARIES = [
     "scikit-learn==1.6.1",
     "datasets==4.0.0",
