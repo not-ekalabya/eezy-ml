@@ -41,7 +41,7 @@ def cmd_run_init():
     sys.exit(result.returncode)
 
 
-def cmd_start():
+def cmd_start(host="localhost", port=5000):
     project_dir = find_project_dir()
     if project_dir is None:
         print("Error: Could not find init.py. Run 'eezy create <dir>' first.", file=sys.stderr)
@@ -56,21 +56,24 @@ def cmd_start():
         )
         sys.exit(1)
 
+    server_url = f"http://{host}:{port}"
     python = get_python(project_dir)
     print(f"Starting inference server from {project_dir} (python: {python})...")
+    server_env = {**__import__('os').environ, "SERVER_HOST": "0.0.0.0", "SERVER_PORT": str(port)}
     server_proc = subprocess.Popen(
         [python, str(project_dir / "server.py")],
         cwd=project_dir,
+        env=server_env,
     )
 
     import time
     import urllib.request
     import urllib.error
 
-    print("Waiting for server to be ready...")
+    print(f"Waiting for server to be ready at {server_url}...")
     for _ in range(20):
         try:
-            urllib.request.urlopen("http://localhost:5000/health", timeout=1)
+            urllib.request.urlopen(f"{server_url}/health", timeout=1)
             break
         except (urllib.error.URLError, OSError):
             time.sleep(0.5)
@@ -80,9 +83,11 @@ def cmd_start():
         sys.exit(1)
 
     print("Server is ready. Running tests...\n")
+    test_env = {**__import__('os').environ, "SERVER_URL": server_url}
     test_result = subprocess.run(
         [python, str(project_dir / "test.py")],
         cwd=project_dir,
+        env=test_env,
     )
 
     print(f"\nTest {'passed' if test_result.returncode == 0 else 'failed'}.")
@@ -151,7 +156,9 @@ def main():
     create_parser.add_argument("--no-venv", action="store_true", help="Skip virtual environment creation")
 
     subparsers.add_parser("init", help="Download data and train the model (runs init.py)")
-    subparsers.add_parser("start", help="Start the inference server and run tests")
+    start_parser = subparsers.add_parser("start", help="Start the inference server and run tests")
+    start_parser.add_argument("--host", default="localhost", help="Server host (default: localhost)")
+    start_parser.add_argument("--port", type=int, default=5000, help="Server port (default: 5000)")
 
     args = parser.parse_args()
 
@@ -160,7 +167,7 @@ def main():
     elif args.command == "init":
         cmd_run_init()
     elif args.command == "start":
-        cmd_start()
+        cmd_start(host=args.host, port=args.port)
     else:
         parser.print_help()
         sys.exit(1)
