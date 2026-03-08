@@ -13,3 +13,6 @@ cli/dist/
 # examples
 
 examples/scikit_learn_mnist/.venv/
+
+# backend
+backend/.aws-sam/
