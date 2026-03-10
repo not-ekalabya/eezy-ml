@@ -1,4 +1,4 @@
-"""utils.py — EC2 instance management for eezy-ml deployments."""
+﻿"""utils.py - EC2 instance management and DynamoDB project store."""
 
 import os
 import re
@@ -27,6 +27,9 @@ ALLOWED_INSTANCE_TYPES = {
 
 ec2_client = boto3.client("ec2", region_name="us-east-1")
 ssm_client = boto3.client("ssm", region_name="us-east-1")
+dynamodb = boto3.resource("dynamodb", region_name="us-east-1")
+PROJECTS_TABLE = os.environ.get("PROJECTS_TABLE", "eezy-ml-projects")
+projects_table = dynamodb.Table(PROJECTS_TABLE)
 
 
 # ---------------------------------------------------------------------------
@@ -54,6 +57,20 @@ def validate_instance_type(instance_type):
         )
 
 
+def validate_project_payload(name, repo_url, github_token, instance_id):
+    if not name or not isinstance(name, str):
+        raise ValueError("name is required and must be a non-empty string")
+    if repo_url:
+        validate_repo_url(repo_url)
+    if github_token is not None and not isinstance(github_token, str):
+        raise ValueError("github_token must be a string when provided")
+    if instance_id is None:
+        return
+    if not isinstance(instance_id, str):
+        raise ValueError("instance_id must be a string")
+    validate_instance_id(instance_id)
+
+
 # ---------------------------------------------------------------------------
 # GitHub token
 # ---------------------------------------------------------------------------
@@ -73,6 +90,105 @@ def get_github_token():
             "GitHub token not found. Set GITHUB_TOKEN env var or "
             f"create SSM parameter {ssm_name}: {e}"
         )
+
+
+# ---------------------------------------------------------------------------
+# DynamoDB project store
+# ---------------------------------------------------------------------------
+
+def create_project(name, repo_url, github_token, instance_id=None):
+    validate_project_payload(name, repo_url, github_token, instance_id)
+
+    item = {
+        "name": name,
+        "repo_url": repo_url or "",
+        "github_token": github_token or "",
+        "instance_id": instance_id or "",
+        # keep schema single-instance; legacy instance_ids removed
+    }
+
+    try:
+        projects_table.put_item(
+            Item=item,
+            ConditionExpression="attribute_not_exists(#n)",
+            ExpressionAttributeNames={"#n": "name"},
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            raise ValueError(f"Project '{name}' already exists")
+        raise
+
+    return {"message": "created", "project": item}
+
+
+def list_projects():
+    resp = projects_table.scan()
+    items = []
+    for item in resp.get("Items", []):
+        # normalize legacy records
+        if "instance_ids" in item and not item.get("instance_id"):
+            item["instance_id"] = item["instance_ids"][0] if item["instance_ids"] else ""
+        item.pop("instance_ids", None)
+        items.append(item)
+    return {"projects": items}
+
+
+def delete_project(name):
+    if not name:
+        raise ValueError("name is required")
+    try:
+        projects_table.delete_item(
+            Key={"name": name},
+            ConditionExpression="attribute_exists(#n)",
+            ExpressionAttributeNames={"#n": "name"},
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            raise ValueError(f"Project '{name}' does not exist")
+        raise
+    return {"message": "deleted", "name": name}
+
+
+def modify_project(name, repo_url=None, github_token=None, instance_id=None):
+    validate_project_payload(name, repo_url, github_token, instance_id)
+
+    update_expr = []
+    expr_values = {}
+    expr_names = {"#n": "name"}
+    remove_expr = ["instance_ids"]
+
+    if repo_url is not None:
+        update_expr.append("repo_url = :r")
+        expr_values[":r"] = repo_url
+    if github_token is not None:
+        update_expr.append("github_token = :g")
+        expr_values[":g"] = github_token
+    if instance_id is not None:
+        update_expr.append("instance_id = :i")
+        expr_values[":i"] = instance_id
+
+    if not update_expr:
+        raise ValueError("Nothing to update")
+
+    update_statement = "SET " + ", ".join(update_expr)
+    if remove_expr:
+        update_statement = "REMOVE " + ", ".join(remove_expr) + " " + update_statement
+
+    try:
+        resp = projects_table.update_item(
+            Key={"name": name},
+            ConditionExpression="attribute_exists(#n)",
+            ExpressionAttributeNames=expr_names,
+            UpdateExpression=update_statement,
+            ExpressionAttributeValues=expr_values,
+            ReturnValues="ALL_NEW",
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            raise ValueError(f"Project '{name}' does not exist")
+        raise
+
+    return {"message": "updated", "project": resp.get("Attributes", {})}
 
 
 # ---------------------------------------------------------------------------

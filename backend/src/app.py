@@ -1,20 +1,79 @@
-"""app.py — Lambda handler for eezy-ml backend API.
+ï»¿"""app.py - Lambda handler for eezy-ml backend API.
 
-All business endpoints were intentionally removed; the file keeps the
-startup/boilerplate structure so new routes can be added later.
+This version exposes project management endpoints backed by DynamoDB.
+Only the project-manager routes are enabled; EC2 inference endpoints were
+removed.
 """
 
 import json
 
+from utils import (
+    create_project,
+    list_projects,
+    delete_project,
+    modify_project,
+)
+
 
 def handler(event, context):
-    # Skeleton handler left in place for future routes.
-    return _ok({
-        "status": "stub",
-        "message": "eezy-ml backend starter ready; no endpoints are active.",
-        "input_path": event.get("path", ""),
-        "input_method": event.get("httpMethod", "GET"),
-    })
+    path = event.get("path", "")
+    method = event.get("httpMethod", "GET")
+
+    # --- Project manager ---
+    if path == "/project-manager/create" and method == "POST":
+        body = _parse_body(event)
+        if body is None:
+            return _err(400, "Request body must be valid JSON")
+        return _safe(
+            create_project,
+            name=body.get("name"),
+            repo_url=body.get("repo_url"),
+            github_token=body.get("github_token"),
+            instance_id=body.get("instance_id"),
+        )
+
+    if path == "/project-manager/list" and method == "GET":
+        return _safe(list_projects)
+
+    if path == "/project-manager/delete" and method == "POST":
+        body = _parse_body(event)
+        if body is None:
+            return _err(400, "Request body must be valid JSON")
+        return _safe(delete_project, name=body.get("name"))
+
+    if path == "/project-manager/modify" and method == "POST":
+        body = _parse_body(event)
+        if body is None:
+            return _err(400, "Request body must be valid JSON")
+        return _safe(
+            modify_project,
+            name=body.get("name"),
+            repo_url=body.get("repo_url"),
+            github_token=body.get("github_token"),
+            instance_id=body.get("instance_id"),
+        )
+
+    return _err(404, "Not found")
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+def _parse_body(event):
+    try:
+        return json.loads(event.get("body") or "{}")
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+
+def _safe(fn, *args, **kwargs):
+    try:
+        return _ok(fn(*args, **kwargs))
+    except ValueError as e:
+        return _err(400, str(e))
+    except Exception as e:
+        return _err(500, str(e))
 
 
 def _ok(body, code=200):

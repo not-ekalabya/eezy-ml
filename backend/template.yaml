@@ -15,6 +15,7 @@ Resources:
       Environment:
         Variables:
           GH_PAT: ""
+          PROJECTS_TABLE: "eezy-ml-projects"
 
       Policies:
         - Version: '2012-10-17'
@@ -35,6 +36,15 @@ Resources:
               Action:
                 - ssm:GetParameter
               Resource: '*'
+            - Effect: Allow
+              Action:
+                - dynamodb:PutItem
+                - dynamodb:GetItem
+                - dynamodb:DeleteItem
+                - dynamodb:UpdateItem
+                - dynamodb:Scan
+              Resource:
+                - !Sub arn:aws:dynamodb:${AWS::Region}:${AWS::AccountId}:table/eezy-ml-projects
 
       Events:
         Api:
