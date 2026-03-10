@@ -1,12 +1,10 @@
 # template
 
-template/__pycache__/
 template/data/
 template/model/
 
 # cli
 
-cli/__pycache__/
 cli/eezyml.egg-info/
 cli/dist/
 
@@ -19,3 +17,12 @@ backend/.aws-sam/
 backend/env.json
 backend/start-dev.ps1
 backend/.env
+
+# pycache
+
+**/__pycache__/
+**/*.pyc
+
+# others
+
+**/logs/

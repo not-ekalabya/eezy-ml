@@ -38,6 +38,11 @@ Resources:
               Resource: '*'
             - Effect: Allow
               Action:
+                - ssm:SendCommand
+                - ssm:GetCommandInvocation
+              Resource: '*'
+            - Effect: Allow
+              Action:
                 - dynamodb:PutItem
                 - dynamodb:GetItem
                 - dynamodb:DeleteItem

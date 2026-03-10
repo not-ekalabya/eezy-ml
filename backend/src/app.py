@@ -6,13 +6,17 @@ removed.
 """
 
 import json
+import re
 
 from utils import (
     create_project,
     list_projects,
     delete_project,
     modify_project,
+    setup_project,
 )
+
+_PATH_SETUP = re.compile(r"^/projects/([^/]+)/setup/?$")
 
 
 def handler(event, context):
@@ -52,6 +56,11 @@ def handler(event, context):
             github_token=body.get("github_token"),
             instance_id=body.get("instance_id"),
         )
+
+    m = _PATH_SETUP.match(path)
+    if m and method == "POST":
+        project_name = m.group(1)
+        return _safe(setup_project, project_name)
 
     return _err(404, "Not found")
 

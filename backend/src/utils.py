@@ -3,6 +3,7 @@
 import os
 import re
 import json
+import time
 import urllib.request
 import urllib.error
 import base64
@@ -57,7 +58,7 @@ def validate_instance_type(instance_type):
         )
 
 
-def validate_project_payload(name, repo_url, github_token, instance_id):
+def validate_project_payload(name, repo_url, github_token, instance_id, require_instance=False):
     if not name or not isinstance(name, str):
         raise ValueError("name is required and must be a non-empty string")
     if repo_url:
@@ -65,9 +66,11 @@ def validate_project_payload(name, repo_url, github_token, instance_id):
     if github_token is not None and not isinstance(github_token, str):
         raise ValueError("github_token must be a string when provided")
     if instance_id is None:
+        if require_instance:
+            raise ValueError("instance_id is required")
         return
-    if not isinstance(instance_id, str):
-        raise ValueError("instance_id must be a string")
+    if not isinstance(instance_id, str) or not instance_id.strip():
+        raise ValueError("instance_id must be a non-empty string")
     validate_instance_id(instance_id)
 
 
@@ -97,7 +100,7 @@ def get_github_token():
 # ---------------------------------------------------------------------------
 
 def create_project(name, repo_url, github_token, instance_id=None):
-    validate_project_payload(name, repo_url, github_token, instance_id)
+    validate_project_payload(name, repo_url, github_token, instance_id, require_instance=True)
 
     item = {
         "name": name,
@@ -129,6 +132,8 @@ def list_projects():
         if "instance_ids" in item and not item.get("instance_id"):
             item["instance_id"] = item["instance_ids"][0] if item["instance_ids"] else ""
         item.pop("instance_ids", None)
+        if not item.get("instance_id"):
+            item["instance_id"] = ""
         items.append(item)
     return {"projects": items}
 
@@ -189,6 +194,113 @@ def modify_project(name, repo_url=None, github_token=None, instance_id=None):
         raise
 
     return {"message": "updated", "project": resp.get("Attributes", {})}
+
+
+def setup_project(name):
+    """Run scripts/setup.sh on the project's associated instance."""
+    if not name:
+        raise ValueError("name is required")
+
+    project = projects_table.get_item(Key={"name": name}).get("Item")
+    if not project:
+        raise ValueError(f"Project '{name}' does not exist")
+
+    instance_id = project.get("instance_id")
+    if not instance_id:
+        raise ValueError(f"Project '{name}' has no associated instance_id")
+    validate_instance_id(instance_id)
+
+    repo_url = project.get("repo_url")
+    github_token = project.get("github_token")
+    if not repo_url or not github_token:
+        raise ValueError("repo_url and github_token are required on the project to run setup")
+    validate_repo_url(repo_url)
+
+    # Preflight: instance must exist and be running for SSM RunCommand.
+    try:
+        inst = ec2_client.describe_instances(InstanceIds=[instance_id])
+        reservations = inst.get("Reservations", [])
+        if not reservations or not reservations[0].get("Instances"):
+            raise ValueError(f"Instance '{instance_id}' not found")
+        state = reservations[0]["Instances"][0]["State"]["Name"]
+        if state != "running":
+            raise ValueError(
+                f"Instance '{instance_id}' is in state '{state}', expected 'running'"
+            )
+    except ClientError as e:
+        raise RuntimeError(f"Failed to check instance state: {e}")
+
+    # Preflight: SSM agent/registration must be healthy.
+    try:
+        ssm_info = ssm_client.describe_instance_information(
+            Filters=[{"Key": "InstanceIds", "Values": [instance_id]}]
+        )
+        info_list = ssm_info.get("InstanceInformationList", [])
+        if not info_list:
+            raise ValueError(
+                f"Instance '{instance_id}' is not registered in SSM. "
+                "Attach IAM role AmazonSSMManagedInstanceCore and ensure SSM Agent is running."
+            )
+        ping = info_list[0].get("PingStatus", "Unknown")
+        if ping != "Online":
+            raise ValueError(
+                f"Instance '{instance_id}' SSM PingStatus is '{ping}', expected 'Online'"
+            )
+    except ClientError as e:
+        raise RuntimeError(f"Failed to check SSM status: {e}")
+
+    # Build repo URL with token for clone
+    auth_repo = repo_url.replace("https://", f"https://{github_token}@")
+    commands = [
+        "set -e",
+        "WORKDIR=/tmp/eezy-ml-project",
+        "rm -rf \"$WORKDIR\"",
+        f"git clone {auth_repo} \"$WORKDIR\"",
+        f"cd \"$WORKDIR\" && git remote set-url origin {repo_url}",
+        "cd \"$WORKDIR\"",
+        "chmod +x scripts/setup.sh || true",
+        "./scripts/setup.sh",
+    ]
+
+    try:
+        send_resp = ssm_client.send_command(
+            InstanceIds=[instance_id],
+            DocumentName="AWS-RunShellScript",
+            Parameters={"commands": commands},
+        )
+    except ClientError as e:
+        raise RuntimeError(
+            f"Failed to start setup command: {e}. "
+            "Confirm the instance is managed by SSM and currently Online."
+        )
+
+    command_id = send_resp["Command"]["CommandId"]
+
+    # Poll for completion (short window; Lambda timeout is 900s so keep light)
+    status = "InProgress"
+    stdout = ""
+    stderr = ""
+    for _ in range(15):
+        time.sleep(2)
+        try:
+            inv = ssm_client.get_command_invocation(
+                CommandId=command_id, InstanceId=instance_id
+            )
+            status = inv.get("Status")
+            stdout = inv.get("StandardOutputContent", "")
+            stderr = inv.get("StandardErrorContent", "")
+            if status in {"Success", "Failed", "TimedOut", "Cancelled"}:
+                break
+        except ClientError:
+            continue
+
+    return {
+        "message": "setup invoked",
+        "command_id": command_id,
+        "status": status,
+        "stdout": stdout,
+        "stderr": stderr,
+    }
 
 
 # ---------------------------------------------------------------------------
