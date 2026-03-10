@@ -1,7 +1,0 @@
-{
-  "httpMethod": "DELETE",
-  "path": "/terminate/i-0156606f489e4a432",
-  "body": null,
-  "pathParameters": null,
-  "queryStringParameters": null
-}
