@@ -258,8 +258,16 @@ def setup_project(name):
         f"git clone {auth_repo} \"$WORKDIR\"",
         f"cd \"$WORKDIR\" && git remote set-url origin {repo_url}",
         "cd \"$WORKDIR\"",
-        "chmod +x scripts/setup.sh || true",
-        "./scripts/setup.sh",
+        "SETUP_SCRIPT=$(find . -maxdepth 5 -type f -path '*/scripts/setup.sh' | sed 's#^./##' | head -n 1)",
+        "if [ -z \"$SETUP_SCRIPT\" ]; then "
+        "echo 'setup.sh not found under */scripts/setup.sh' >&2; "
+        "echo '--- git remote -v ---' >&2; git remote -v >&2 || true; "
+        "echo '--- git branch --show-current ---' >&2; git branch --show-current >&2 || true; "
+        "echo '--- find . -maxdepth 4 -type f -name setup.sh ---' >&2; "
+        "find . -maxdepth 4 -type f -name setup.sh >&2 || true; "
+        "exit 127; fi",
+        "chmod +x \"$SETUP_SCRIPT\"",
+        "./\"$SETUP_SCRIPT\"",
     ]
 
     try:
