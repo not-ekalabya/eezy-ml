@@ -258,13 +258,13 @@ def setup_project(name):
         f"git clone {auth_repo} \"$WORKDIR\"",
         f"cd \"$WORKDIR\" && git remote set-url origin {repo_url}",
         "cd \"$WORKDIR\"",
-        "SETUP_SCRIPT=$(find . -maxdepth 5 -type f -path '*/scripts/setup.sh' | sed 's#^./##' | head -n 1)",
+        "SETUP_SCRIPT=$(find . -maxdepth 6 -type f -path '*/scripts/setup.sh' | sed 's#^./##' | head -n 1)",
         "if [ -z \"$SETUP_SCRIPT\" ]; then "
         "echo 'setup.sh not found under */scripts/setup.sh' >&2; "
         "echo '--- git remote -v ---' >&2; git remote -v >&2 || true; "
         "echo '--- git branch --show-current ---' >&2; git branch --show-current >&2 || true; "
-        "echo '--- find . -maxdepth 4 -type f -name setup.sh ---' >&2; "
-        "find . -maxdepth 4 -type f -name setup.sh >&2 || true; "
+        "echo '--- find . -maxdepth 6 -type f -name setup.sh ---' >&2; "
+        "find . -maxdepth 6 -type f -name setup.sh >&2 || true; "
         "exit 127; fi",
         "chmod +x \"$SETUP_SCRIPT\"",
         "./\"$SETUP_SCRIPT\"",
@@ -304,6 +304,166 @@ def setup_project(name):
 
     return {
         "message": "setup invoked",
+        "command_id": command_id,
+        "status": status,
+        "stdout": stdout,
+        "stderr": stderr,
+    }
+
+
+def update_project(name):
+    """Pull latest changes for a project repo on instance and re-run setup."""
+    if not name:
+        raise ValueError("name is required")
+
+    project = projects_table.get_item(Key={"name": name}).get("Item")
+    if not project:
+        raise ValueError(f"Project '{name}' does not exist")
+
+    instance_id = project.get("instance_id")
+    if not instance_id:
+        raise ValueError(f"Project '{name}' has no associated instance_id")
+    validate_instance_id(instance_id)
+
+    repo_url = project.get("repo_url")
+    github_token = project.get("github_token")
+    if not repo_url or not github_token:
+        raise ValueError("repo_url and github_token are required on the project to run update")
+    validate_repo_url(repo_url)
+
+    try:
+        inst = ec2_client.describe_instances(InstanceIds=[instance_id])
+        reservations = inst.get("Reservations", [])
+        if not reservations or not reservations[0].get("Instances"):
+            raise ValueError(f"Instance '{instance_id}' not found")
+        state = reservations[0]["Instances"][0]["State"]["Name"]
+        if state != "running":
+            raise ValueError(
+                f"Instance '{instance_id}' is in state '{state}', expected 'running'"
+            )
+    except ClientError as e:
+        raise RuntimeError(f"Failed to check instance state: {e}")
+
+    try:
+        ssm_info = ssm_client.describe_instance_information(
+            Filters=[{"Key": "InstanceIds", "Values": [instance_id]}]
+        )
+        info_list = ssm_info.get("InstanceInformationList", [])
+        if not info_list:
+            raise ValueError(
+                f"Instance '{instance_id}' is not registered in SSM. "
+                "Attach IAM role AmazonSSMManagedInstanceCore and ensure SSM Agent is running."
+            )
+        ping = info_list[0].get("PingStatus", "Unknown")
+        if ping != "Online":
+            raise ValueError(
+                f"Instance '{instance_id}' SSM PingStatus is '{ping}', expected 'Online'"
+            )
+    except ClientError as e:
+        raise RuntimeError(f"Failed to check SSM status: {e}")
+
+    auth_repo = repo_url.replace("https://", f"https://{github_token}@")
+
+    # Reboot before update to force a clean runtime state.
+    try:
+        ssm_client.send_command(
+            InstanceIds=[instance_id],
+            DocumentName="AWS-RunShellScript",
+            Parameters={"commands": ["sudo reboot"]},
+        )
+    except ClientError as e:
+        raise RuntimeError(f"Failed to trigger reboot before update: {e}")
+
+    # Wait for instance to return online in SSM after reboot.
+    online = False
+    for _ in range(45):
+        time.sleep(4)
+        try:
+            ssm_info = ssm_client.describe_instance_information(
+                Filters=[{"Key": "InstanceIds", "Values": [instance_id]}]
+            )
+            info_list = ssm_info.get("InstanceInformationList", [])
+            if info_list and info_list[0].get("PingStatus") == "Online":
+                online = True
+                break
+        except ClientError:
+            continue
+    if not online:
+        raise RuntimeError(
+            f"Instance '{instance_id}' did not come back Online in SSM after reboot"
+        )
+
+    commands = [
+        "set -e",
+        f"PROJECT_NAME='{name}'",
+        "BASE_DIR=/opt/eezy-ml-projects",
+        "WORKDIR=\"$BASE_DIR/$PROJECT_NAME\"",
+        "if [ -d /app/.git ]; then WORKDIR=/app; fi",
+        "mkdir -p \"$BASE_DIR\"",
+        "if [ ! -d \"$WORKDIR/.git\" ]; then "
+        "rm -rf \"$WORKDIR\"; "
+        f"git clone {auth_repo} \"$WORKDIR\"; "
+        f"cd \"$WORKDIR\" && git remote set-url origin {repo_url}; "
+        "else "
+        "cd \"$WORKDIR\"; "
+        f"git remote set-url origin {auth_repo}; "
+        "git fetch origin --prune; "
+        "DEFAULT_BRANCH=$(git symbolic-ref --short refs/remotes/origin/HEAD | sed 's#^origin/##'); "
+        "if [ -z \"$DEFAULT_BRANCH\" ]; then DEFAULT_BRANCH=main; fi; "
+        "git checkout \"$DEFAULT_BRANCH\" || git checkout -B \"$DEFAULT_BRANCH\" \"origin/$DEFAULT_BRANCH\"; "
+        "git reset --hard \"origin/$DEFAULT_BRANCH\"; "
+        "git clean -fdx; "
+        f"git remote set-url origin {repo_url}; "
+        "fi",
+        "cd \"$WORKDIR\"",
+        "echo \"Using WORKDIR=$WORKDIR\"",
+        "echo \"Commit before setup: $(git rev-parse HEAD)\"",
+        "SETUP_SCRIPT=$(find . -maxdepth 5 -type f -path '*/scripts/setup.sh' | sed 's#^./##' | head -n 1)",
+        "if [ -z \"$SETUP_SCRIPT\" ]; then "
+        "echo 'setup.sh not found under */scripts/setup.sh' >&2; "
+        "echo '--- git remote -v ---' >&2; git remote -v >&2 || true; "
+        "echo '--- git branch --show-current ---' >&2; git branch --show-current >&2 || true; "
+        "echo '--- find . -maxdepth 4 -type f -name setup.sh ---' >&2; "
+        "find . -maxdepth 4 -type f -name setup.sh >&2 || true; "
+        "exit 127; fi",
+        "chmod +x \"$SETUP_SCRIPT\"",
+        "./\"$SETUP_SCRIPT\"",
+        "echo \"Commit after setup: $(git rev-parse HEAD)\"",
+    ]
+
+    try:
+        send_resp = ssm_client.send_command(
+            InstanceIds=[instance_id],
+            DocumentName="AWS-RunShellScript",
+            Parameters={"commands": commands},
+        )
+    except ClientError as e:
+        raise RuntimeError(
+            f"Failed to start update command: {e}. "
+            "Confirm the instance is managed by SSM and currently Online."
+        )
+
+    command_id = send_resp["Command"]["CommandId"]
+
+    status = "InProgress"
+    stdout = ""
+    stderr = ""
+    for _ in range(15):
+        time.sleep(2)
+        try:
+            inv = ssm_client.get_command_invocation(
+                CommandId=command_id, InstanceId=instance_id
+            )
+            status = inv.get("Status")
+            stdout = inv.get("StandardOutputContent", "")
+            stderr = inv.get("StandardErrorContent", "")
+            if status in {"Success", "Failed", "TimedOut", "Cancelled"}:
+                break
+        except ClientError:
+            continue
+
+    return {
+        "message": "update invoked",
         "command_id": command_id,
         "status": status,
         "stdout": stdout,

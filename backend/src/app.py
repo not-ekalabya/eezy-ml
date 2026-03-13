@@ -14,9 +14,11 @@ from utils import (
     delete_project,
     modify_project,
     setup_project,
+    update_project,
 )
 
 _PATH_SETUP = re.compile(r"^/projects/([^/]+)/setup/?$")
+_PATH_UPDATE = re.compile(r"^/projects/([^/]+)/update/?$")
 
 
 def handler(event, context):
@@ -61,6 +63,11 @@ def handler(event, context):
     if m and method == "POST":
         project_name = m.group(1)
         return _safe(setup_project, project_name)
+
+    m = _PATH_UPDATE.match(path)
+    if m and method == "POST":
+        project_name = m.group(1)
+        return _safe(update_project, project_name)
 
     return _err(404, "Not found")
 
