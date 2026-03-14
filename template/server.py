@@ -17,14 +17,14 @@ import subprocess
 import sys
 
 from flask import Flask, request, jsonify
-from inference import predict, predict_batch
+from inference import load_model, predict, predict_batch
 
 app = Flask(__name__)
 
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok"})
+    return jsonify({"status": "ok - auto deployment works <test 2>!"})
 
 
 @app.route("/test", methods=["GET"])
@@ -68,7 +68,12 @@ def predict_endpoint():
 
 
 if __name__ == "__main__":
-    import os
+    try:
+        load_model()
+    except FileNotFoundError:
+        pass
+
     host = os.environ.get("SERVER_HOST", "0.0.0.0")
     port = int(os.environ.get("SERVER_PORT", 5000))
     app.run(host=host, port=port, threaded=True)
+    

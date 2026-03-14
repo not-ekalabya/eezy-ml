@@ -4,10 +4,28 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR/.."
 
-# If the virtual environment already exists, skip the full setup and just
-# update the installed packages then restart the server.
+MODEL_PATH="model/model.joblib"
+DATA_DIR="data"
+
+validate_model() {
+    if [ ! -f "$MODEL_PATH" ]; then
+        return 1
+    fi
+
+    python -c "import joblib; m=joblib.load('$MODEL_PATH'); raise SystemExit(0 if m.named_steps['scaler'].n_features_in_ == 784 else 1)"
+}
+
+rebuild_model() {
+    echo "=== Rebuilding MNIST model ==="
+    rm -f "$MODEL_PATH"
+    mkdir -p "$DATA_DIR" "$(dirname "$MODEL_PATH")"
+    python init.py
+}
+
+# If the virtual environment already exists, skip the full system setup and just
+# update the installed packages, repair the model if needed, then restart the server.
 if [ -d "venv" ]; then
-    echo "=== Environment already set up — updating ==="
+    echo "=== Environment already set up - updating ==="
 
     echo "=== Activating virtual environment ==="
     source venv/bin/activate
@@ -15,6 +33,12 @@ if [ -d "venv" ]; then
     echo "=== Updating requirements ==="
     pip install --upgrade pip
     pip install -r requirements.txt
+
+    if validate_model; then
+        echo "=== Existing model is compatible ==="
+    else
+        rebuild_model
+    fi
 
     echo "=== Stopping existing server (if running) ==="
     pkill -f "python server.py" || true
@@ -45,7 +69,7 @@ echo "=== Setting up swap space to prevent OOM kills ==="
 if [ ! -f /swapfile ]; then
     # Work in GiB to avoid allocating petabyte-sized swap due to unit mistakes.
     FREE_GB=$(df -B1 / | awk 'NR==2 {printf "%.0f", $4/1024/1024/1024}')
-    SWAP_SIZE=$(( FREE_GB * 9 / 10 ))   # target 90% of free space
+    SWAP_SIZE=$(( FREE_GB * 9 / 10 ))
     # Keep swap within sane bounds: min 1 GiB, max 8 GiB.
     if [ "$SWAP_SIZE" -lt 1 ]; then SWAP_SIZE=1; fi
     if [ "$SWAP_SIZE" -gt 8 ]; then SWAP_SIZE=8; fi
@@ -69,10 +93,7 @@ echo "=== Installing requirements ==="
 pip install --upgrade pip
 pip install -r requirements.txt
 
-echo "=== Running init.py (quick mode to keep memory small) ==="
-nohup python init.py --quick > init.log 2>&1 &
-INIT_PID=$!
-wait $INIT_PID
+rebuild_model
 
 echo "=== Starting server in background ==="
 nohup python server.py > server.log 2>&1 &
