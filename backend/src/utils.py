@@ -398,7 +398,17 @@ def update_project(name):
         f"PROJECT_NAME='{name}'",
         "BASE_DIR=/opt/eezy-ml-projects",
         "WORKDIR=\"$BASE_DIR/$PROJECT_NAME\"",
-        "if [ -d /app/.git ]; then WORKDIR=/app; fi",
+        # Prefer persistent /opt checkout paths over /app so updates survive reboot.
+        # If project-name path is missing, try any /opt checkout with matching origin URL.
+        "if [ ! -d \"$WORKDIR/.git\" ] && [ -d \"$BASE_DIR\" ]; then "
+        "for d in \"$BASE_DIR\"/*; do "
+        "[ -d \"$d/.git\" ] || continue; "
+        "origin=$(git -C \"$d\" remote get-url origin 2>/dev/null || true); "
+        "clean_origin=$(printf '%s' \"$origin\" | sed -E 's#https://[^@]+@#https://#'); "
+        f"if [ \"$clean_origin\" = \"{repo_url}\" ] || [ \"$clean_origin\" = \"{repo_url}.git\" ]; then WORKDIR=\"$d\"; break; fi; "
+        "done; "
+        "fi",
+        "if [ ! -d \"$WORKDIR/.git\" ] && [ -d /app/.git ]; then WORKDIR=/app; fi",
         "mkdir -p \"$BASE_DIR\"",
         "if [ ! -d \"$WORKDIR/.git\" ]; then "
         "rm -rf \"$WORKDIR\"; "
@@ -464,6 +474,167 @@ def update_project(name):
 
     return {
         "message": "update invoked",
+        "command_id": command_id,
+        "status": status,
+        "stdout": stdout,
+        "stderr": stderr,
+    }
+
+
+def start_project(name):
+    """Start a stopped project's instance and bring the server back up."""
+    if not name:
+        raise ValueError("name is required")
+
+    project = projects_table.get_item(Key={"name": name}).get("Item")
+    if not project:
+        raise ValueError(f"Project '{name}' does not exist")
+
+    instance_id = project.get("instance_id")
+    if not instance_id:
+        raise ValueError(f"Project '{name}' has no associated instance_id")
+    validate_instance_id(instance_id)
+
+    repo_url = project.get("repo_url")
+    if not repo_url:
+        raise ValueError("repo_url is required on the project to run start")
+    validate_repo_url(repo_url)
+
+    try:
+        inst = ec2_client.describe_instances(InstanceIds=[instance_id])
+        reservations = inst.get("Reservations", [])
+        if not reservations or not reservations[0].get("Instances"):
+            raise ValueError(f"Instance '{instance_id}' not found")
+        state = reservations[0]["Instances"][0]["State"]["Name"]
+    except ClientError as e:
+        raise RuntimeError(f"Failed to check instance state: {e}")
+
+    if state == "stopped":
+        try:
+            ec2_client.start_instances(InstanceIds=[instance_id])
+        except ClientError as e:
+            raise RuntimeError(f"Failed to start instance '{instance_id}': {e}")
+    elif state in {"running", "pending"}:
+        pass
+    else:
+        raise ValueError(
+            f"Instance '{instance_id}' is in state '{state}', expected 'stopped' or 'running'"
+        )
+
+    # Wait until EC2 reports running.
+    running = False
+    for _ in range(45):
+        time.sleep(4)
+        try:
+            inst = ec2_client.describe_instances(InstanceIds=[instance_id])
+            reservations = inst.get("Reservations", [])
+            if reservations and reservations[0].get("Instances"):
+                current_state = reservations[0]["Instances"][0]["State"]["Name"]
+                if current_state == "running":
+                    running = True
+                    break
+        except ClientError:
+            continue
+    if not running:
+        raise RuntimeError(f"Instance '{instance_id}' did not reach 'running' state")
+
+    # Wait for SSM to become Online.
+    online = False
+    for _ in range(45):
+        time.sleep(4)
+        try:
+            ssm_info = ssm_client.describe_instance_information(
+                Filters=[{"Key": "InstanceIds", "Values": [instance_id]}]
+            )
+            info_list = ssm_info.get("InstanceInformationList", [])
+            if info_list and info_list[0].get("PingStatus") == "Online":
+                online = True
+                break
+        except ClientError:
+            continue
+    if not online:
+        raise RuntimeError(
+            f"Instance '{instance_id}' did not come back Online in SSM after start"
+        )
+
+    commands = [
+        "set -e",
+        f"PROJECT_NAME='{name}'",
+        "BASE_DIR=/opt/eezy-ml-projects",
+        "WORKDIR=\"$BASE_DIR/$PROJECT_NAME\"",
+        "if [ ! -d \"$WORKDIR/.git\" ] && [ -d \"$BASE_DIR\" ]; then "
+        "for d in \"$BASE_DIR\"/*; do "
+        "[ -d \"$d/.git\" ] || continue; "
+        "origin=$(git -C \"$d\" remote get-url origin 2>/dev/null || true); "
+        "clean_origin=$(printf '%s' \"$origin\" | sed -E 's#https://[^@]+@#https://#'); "
+        f"if [ \"$clean_origin\" = \"{repo_url}\" ] || [ \"$clean_origin\" = \"{repo_url}.git\" ]; then WORKDIR=\"$d\"; break; fi; "
+        "done; "
+        "fi",
+        "if [ ! -d \"$WORKDIR/.git\" ] && [ -d /app/.git ]; then WORKDIR=/app; fi",
+        "if [ ! -d \"$WORKDIR/.git\" ]; then "
+        "echo \"No project checkout found to resume server\" >&2; "
+        "exit 20; "
+        "fi",
+        "cd \"$WORKDIR\"",
+        "echo \"Using WORKDIR=$WORKDIR\"",
+        "SERVE_SCRIPT=$(find . -maxdepth 5 -type f -path '*/scripts/serve.sh' | sed 's#^./##' | head -n 1)",
+        "SETUP_SCRIPT=$(find . -maxdepth 5 -type f -path '*/scripts/setup.sh' | sed 's#^./##' | head -n 1)",
+        "if [ -n \"$SERVE_SCRIPT\" ]; then "
+        "chmod +x \"$SERVE_SCRIPT\"; "
+        "./\"$SERVE_SCRIPT\"; "
+        "elif [ -n \"$SETUP_SCRIPT\" ]; then "
+        "chmod +x \"$SETUP_SCRIPT\"; "
+        "./\"$SETUP_SCRIPT\"; "
+        "elif command -v docker >/dev/null 2>&1; then "
+        "if docker ps -a --format '{{.Names}}' | grep -qx eezy-ml; then "
+        "docker start eezy-ml || docker restart eezy-ml; "
+        "else "
+        "echo 'No serve.sh/setup.sh and no eezy-ml container found' >&2; exit 127; "
+        "fi; "
+        "else "
+        "echo 'No serve.sh/setup.sh and docker is unavailable' >&2; exit 127; "
+        "fi",
+        "for i in $(seq 1 30); do "
+        "if curl -fsS http://127.0.0.1:5000/health >/dev/null 2>&1; then echo 'health-ok'; exit 0; fi; "
+        "sleep 2; "
+        "done; "
+        "echo 'Service did not become healthy on :5000 in time' >&2; exit 124",
+    ]
+
+    try:
+        send_resp = ssm_client.send_command(
+            InstanceIds=[instance_id],
+            DocumentName="AWS-RunShellScript",
+            Parameters={"commands": commands},
+        )
+    except ClientError as e:
+        raise RuntimeError(
+            f"Failed to start server command: {e}. "
+            "Confirm the instance is managed by SSM and currently Online."
+        )
+
+    command_id = send_resp["Command"]["CommandId"]
+
+    status = "InProgress"
+    stdout = ""
+    stderr = ""
+    for _ in range(20):
+        time.sleep(2)
+        try:
+            inv = ssm_client.get_command_invocation(
+                CommandId=command_id, InstanceId=instance_id
+            )
+            status = inv.get("Status")
+            stdout = inv.get("StandardOutputContent", "")
+            stderr = inv.get("StandardErrorContent", "")
+            if status in {"Success", "Failed", "TimedOut", "Cancelled"}:
+                break
+        except ClientError:
+            continue
+
+    return {
+        "message": "start invoked",
+        "instance_id": instance_id,
         "command_id": command_id,
         "status": status,
         "stdout": stdout,
