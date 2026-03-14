@@ -8,6 +8,7 @@ import boto3
 from botocore.exceptions import ClientError
 
 INSTANCE_ID_PATTERN = re.compile(r"^i-[a-f0-9]{8,17}$")
+SERVER_RUNNING_HOOK_PATTERN = re.compile(r"=== Server is running \(PID: \d+\) ===")
 
 
 def validate_instance_id(instance_id):
@@ -197,12 +198,28 @@ def stream_command_logs(ssm_client, command_id, instance_id, max_wait_seconds=90
             stdout_len = len(stdout)
             if chunk.strip():
                 print(chunk, end="", flush=True)
+                if SERVER_RUNNING_HOOK_PATTERN.search(chunk):
+                    return {
+                        "command_id": command_id,
+                        "status": "Success",
+                        "stdout": stdout,
+                        "stderr": stderr,
+                        "hook_detected": "server_running",
+                    }
 
         if stderr_grew:
             chunk = stderr[stderr_len:]
             stderr_len = len(stderr)
             if chunk.strip():
                 print(chunk, end="", file=os.sys.stderr, flush=True)
+                if SERVER_RUNNING_HOOK_PATTERN.search(chunk):
+                    return {
+                        "command_id": command_id,
+                        "status": "Success",
+                        "stdout": stdout,
+                        "stderr": stderr,
+                        "hook_detected": "server_running",
+                    }
 
         if stdout_grew or stderr_grew:
             idle_polls = 0
@@ -227,6 +244,14 @@ def stream_command_logs(ssm_client, command_id, instance_id, max_wait_seconds=90
                     print(payload, end="", flush=True)
                     raw_log_offset += len(payload.encode("utf-8"))
                     idle_polls = 0
+                    if SERVER_RUNNING_HOOK_PATTERN.search(payload):
+                        return {
+                            "command_id": command_id,
+                            "status": "Success",
+                            "stdout": stdout,
+                            "stderr": stderr,
+                            "hook_detected": "server_running",
+                        }
             elif raw_code == 3:
                 # Log file not created yet; keep polling.
                 pass
@@ -376,7 +401,7 @@ def start_project(project_name, region_name, table_name):
     result = stream_command_logs(ssm_client, command_id, instance_id)
     if not (result.get("stdout", "").strip() or result.get("stderr", "").strip()):
         stream_ssm_agent_logs(ssm_client, instance_id, command_id)
-    if result.get("status") == "InProgress":
+    if result.get("status") == "InProgress" and result.get("hook_detected") != "server_running":
         print("Start command still running; waiting for final SSM status...", flush=True)
         final_invocation = wait_for_command(
             ssm_client,
