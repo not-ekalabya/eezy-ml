@@ -16,11 +16,13 @@ from utils import (
     setup_project,
     start_project,
     update_project,
+    get_project_logs,
 )
 
 _PATH_SETUP = re.compile(r"^/projects/([^/]+)/setup/?$")
 _PATH_START = re.compile(r"^/projects/([^/]+)/start/?$")
 _PATH_UPDATE = re.compile(r"^/projects/([^/]+)/update/?$")
+_PATH_LOGS = re.compile(r"^/projects/([^/]+)/logs/?$")
 
 
 def handler(event, context):
@@ -75,6 +77,17 @@ def handler(event, context):
     if m and method == "POST":
         project_name = m.group(1)
         return _safe(update_project, project_name)
+
+    m = _PATH_LOGS.match(path)
+    if m and method == "GET":
+        project_name = m.group(1)
+        params = event.get("queryStringParameters") or {}
+        command_id = params.get("command_id", "")
+        try:
+            start_byte = int(params.get("start_byte", 0))
+        except (ValueError, TypeError):
+            return _err(400, "start_byte must be an integer")
+        return _safe(get_project_logs, project_name, command_id, start_byte)
 
     return _err(404, "Not found")
 

@@ -17,6 +17,7 @@ SG_DESCRIPTION = "Security group for eezy-ml deployed instances"
 
 GITHUB_URL_PATTERN = re.compile(r"^https://github\.com/[\w.-]+/[\w.-]+$")
 INSTANCE_ID_PATTERN = re.compile(r"^i-[a-f0-9]{8,17}$")
+SERVER_RUNNING_HOOK_PATTERN = re.compile(r"=== Server is running \(PID: \d+\) ===")
 
 ALLOWED_INSTANCE_TYPES = {
     "t2.micro", "t2.small", "t2.medium", "t2.large",
@@ -308,6 +309,7 @@ def setup_project(name):
         "status": status,
         "stdout": stdout,
         "stderr": stderr,
+        "logs": _merge_logs(stdout, stderr),
     }
 
 
@@ -478,6 +480,288 @@ def update_project(name):
         "status": status,
         "stdout": stdout,
         "stderr": stderr,
+        "logs": _merge_logs(stdout, stderr),
+    }
+
+
+# ---------------------------------------------------------------------------
+# SSM remote log helpers
+# ---------------------------------------------------------------------------
+
+def _merge_logs(stdout, stderr):
+    """Combine stdout and stderr into a single chronological log string.
+    Because SSM returns them as separate blobs (not interleaved), we append
+    stderr after stdout with a separator if both are non-empty.
+    """
+    parts = [p for p in (stdout.strip(), stderr.strip()) if p]
+    return "\n".join(parts)
+
+def wait_for_command(command_id, instance_id, max_wait_seconds=30, delay_seconds=2):
+    """Poll SSM until a command reaches a terminal status or the time budget is exhausted."""
+    start = time.time()
+    last_invocation = None
+    while time.time() - start < max_wait_seconds:
+        try:
+            invocation = ssm_client.get_command_invocation(
+                CommandId=command_id,
+                InstanceId=instance_id,
+            )
+        except ClientError:
+            time.sleep(delay_seconds)
+            continue
+        last_invocation = invocation
+        if invocation.get("Status", "InProgress") in {"Success", "Failed", "TimedOut", "Cancelled"}:
+            return invocation
+        time.sleep(delay_seconds)
+    return last_invocation or {
+        "Status": "InProgress",
+        "StandardOutputContent": "",
+        "StandardErrorContent": "",
+    }
+
+
+def read_ssm_log_chunk(instance_id, command_id, start_byte):
+    """Read a chunk of SSM agent log output from the instance starting at start_byte.
+
+    The remote script locates the SSM log file for *command_id* and streams bytes
+    starting at *start_byte* via ``dd``.  Returns the raw SSM invocation dict;
+    callers inspect ``StandardOutputContent``, ``Status``, and ``ResponseCode``.
+    Exit code 3 from the remote script means the log file does not exist yet.
+    """
+    commands = [
+        "set -e",
+        f"COMMAND_ID='{command_id}'",
+        f"START_BYTE={start_byte}",
+        "LOG_PATH=$("
+        "find /var/lib/amazon/ssm /var/log/amazon/ssm -type f "
+        "\\( -name stdout -o -name stderr -o -name '*.log' \\) 2>/dev/null "
+        "| grep \"$COMMAND_ID\" "
+        "| sort "
+        "| tail -n 1"
+        ")",
+        "if [ -z \"$LOG_PATH\" ] || [ ! -f \"$LOG_PATH\" ]; then "
+        "LOG_PATH=$("
+        "find /var/lib/amazon/ssm /var/log/amazon/ssm -type f "
+        "\\( -name stdout -o -name stderr -o -name '*.log' \\) 2>/dev/null "
+        "| grep -i \"$COMMAND_ID\" "
+        "| sort "
+        "| tail -n 1"
+        "); "
+        "fi",
+        "if [ -z \"$LOG_PATH\" ] || [ ! -f \"$LOG_PATH\" ]; then exit 3; fi",
+        "FILE_SIZE=$(wc -c < \"$LOG_PATH\")",
+        "if [ \"$START_BYTE\" -ge \"$FILE_SIZE\" ]; then exit 0; fi",
+        "echo \"__LOG_PATH__:$LOG_PATH\"",
+        "dd if=\"$LOG_PATH\" bs=1 skip=\"$START_BYTE\" status=none",
+    ]
+    response = ssm_client.send_command(
+        InstanceIds=[instance_id],
+        DocumentName="AWS-RunShellScript",
+        Parameters={"commands": commands},
+    )
+    return wait_for_command(
+        response["Command"]["CommandId"],
+        instance_id,
+        max_wait_seconds=30,
+        delay_seconds=1,
+    )
+
+
+def _collect_ssm_agent_logs(instance_id, command_id, max_wait_seconds=120, delay_seconds=2):
+    """Collect raw SSM log file content for *command_id*; used as a fallback when
+    ``get_command_invocation`` returns empty output."""
+    start = time.time()
+    offset = 0
+    accumulated = ""
+    idle_polls = 0
+
+    while time.time() - start < max_wait_seconds:
+        invocation = read_ssm_log_chunk(instance_id, command_id, offset)
+        status = invocation.get("Status", "InProgress")
+        raw_stdout = invocation.get("StandardOutputContent", "")
+        code = invocation.get("ResponseCode")
+
+        if status == "Success" and raw_stdout:
+            lines = raw_stdout.splitlines()
+            payload = ""
+            if lines and lines[0].startswith("__LOG_PATH__:"):
+                payload = "\n".join(lines[1:])
+                if raw_stdout.endswith("\n"):
+                    payload += "\n"
+            if payload:
+                offset += len(payload.encode("utf-8"))
+                accumulated += payload
+                idle_polls = 0
+            else:
+                idle_polls += 1
+        elif code == 3:
+            # Log file not created yet; keep waiting.
+            idle_polls += 1
+        else:
+            idle_polls += 1
+
+        if accumulated and idle_polls >= 5:
+            break
+
+        time.sleep(delay_seconds)
+
+    return accumulated
+
+
+def collect_command_logs(command_id, instance_id, max_wait_seconds=900, delay_seconds=1):
+    """Collect command output via ``get_command_invocation``, falling back to reading
+    raw SSM log files when the API output is delayed.  Returns a result dict with
+    keys ``command_id``, ``status``, ``stdout``, ``stderr``, and optionally
+    ``hook_detected``.
+    """
+    start = time.time()
+    stdout_len = 0
+    stderr_len = 0
+    raw_log_offset = 0
+    idle_polls = 0
+    accumulated_stdout = ""
+    accumulated_stderr = ""
+    hook_detected = None
+    final_invocation = None
+
+    while time.time() - start < max_wait_seconds:
+        try:
+            invocation = ssm_client.get_command_invocation(
+                CommandId=command_id,
+                InstanceId=instance_id,
+            )
+        except ClientError:
+            time.sleep(delay_seconds)
+            continue
+
+        final_invocation = invocation
+        stdout = invocation.get("StandardOutputContent", "")
+        stderr = invocation.get("StandardErrorContent", "")
+
+        stdout_grew = len(stdout) > stdout_len
+        stderr_grew = len(stderr) > stderr_len
+
+        if stdout_grew:
+            chunk = stdout[stdout_len:]
+            stdout_len = len(stdout)
+            accumulated_stdout += chunk
+            if SERVER_RUNNING_HOOK_PATTERN.search(chunk):
+                hook_detected = "server_running"
+
+        if stderr_grew:
+            chunk = stderr[stderr_len:]
+            stderr_len = len(stderr)
+            accumulated_stderr += chunk
+            if SERVER_RUNNING_HOOK_PATTERN.search(chunk):
+                hook_detected = "server_running"
+
+        if stdout_grew or stderr_grew:
+            idle_polls = 0
+        else:
+            idle_polls += 1
+
+        # When get_command_invocation output is delayed, read raw SSM log chunks.
+        if idle_polls >= 2:
+            raw_inv = read_ssm_log_chunk(instance_id, command_id, raw_log_offset)
+            raw_stdout = raw_inv.get("StandardOutputContent", "")
+            raw_status = raw_inv.get("Status", "")
+            raw_code = raw_inv.get("ResponseCode")
+
+            if raw_status == "Success" and raw_stdout:
+                lines = raw_stdout.splitlines()
+                payload = ""
+                if lines and lines[0].startswith("__LOG_PATH__:"):
+                    payload = "\n".join(lines[1:])
+                    if raw_stdout.endswith("\n"):
+                        payload += "\n"
+                if payload:
+                    accumulated_stdout += payload
+                    raw_log_offset += len(payload.encode("utf-8"))
+                    idle_polls = 0
+                    if SERVER_RUNNING_HOOK_PATTERN.search(payload):
+                        hook_detected = "server_running"
+            elif raw_code == 3:
+                pass  # log file not yet created; keep polling
+
+        status = invocation.get("Status", "InProgress")
+        if hook_detected == "server_running" or status in {"Success", "Failed", "TimedOut", "Cancelled"}:
+            result = {
+                "command_id": command_id,
+                "status": status,
+                "stdout": accumulated_stdout or stdout,
+                "stderr": accumulated_stderr or stderr,
+            }
+            if hook_detected:
+                result["hook_detected"] = hook_detected
+            return result
+
+        time.sleep(delay_seconds)
+
+    inv = final_invocation or {}
+    return {
+        "command_id": command_id,
+        "status": inv.get("Status", "InProgress"),
+        "stdout": accumulated_stdout or inv.get("StandardOutputContent", ""),
+        "stderr": accumulated_stderr or inv.get("StandardErrorContent", ""),
+    }
+
+
+def get_project_logs(name, command_id, start_byte=0):
+    """Retrieve a chunk of SSM log output for a running command on the project's instance.
+
+    This is intended for polling from the API after a ``start`` or ``update`` call
+    returns a ``command_id``.
+    """
+    if not name:
+        raise ValueError("name is required")
+    if not command_id:
+        raise ValueError("command_id is required")
+
+    project = projects_table.get_item(Key={"name": name}).get("Item")
+    if not project:
+        raise ValueError(f"Project '{name}' does not exist")
+
+    instance_id = project.get("instance_id")
+    if not instance_id:
+        raise ValueError(f"Project '{name}' has no associated instance_id")
+    validate_instance_id(instance_id)
+
+    invocation = read_ssm_log_chunk(instance_id, command_id, start_byte)
+    raw_stdout = invocation.get("StandardOutputContent", "")
+    status = invocation.get("Status", "")
+    code = invocation.get("ResponseCode")
+
+    command_status = "Pending"
+    command_response_code = None
+    command_stderr = ""
+    try:
+        command_invocation = ssm_client.get_command_invocation(
+            CommandId=command_id,
+            InstanceId=instance_id,
+        )
+        command_status = command_invocation.get("Status", "Pending")
+        command_response_code = command_invocation.get("ResponseCode")
+        command_stderr = command_invocation.get("StandardErrorContent", "")
+    except ClientError:
+        # Keep defaults while the invocation record is not yet readable.
+        pass
+
+    payload = ""
+    if status == "Success" and raw_stdout:
+        lines = raw_stdout.splitlines()
+        if lines and lines[0].startswith("__LOG_PATH__:"):
+            payload = "\n".join(lines[1:])
+            if raw_stdout.endswith("\n"):
+                payload += "\n"
+
+    return {
+        "logs": payload,
+        "start_byte": start_byte,
+        "next_byte": start_byte + len(payload.encode("utf-8")),
+        "log_file_not_found": code == 3,
+        "command_status": command_status,
+        "command_response_code": command_response_code,
+        "command_stderr": command_stderr,
     }
 
 
@@ -594,10 +878,20 @@ def start_project(name):
         "else "
         "echo 'No serve.sh/setup.sh and docker is unavailable' >&2; exit 127; "
         "fi",
+        "TAIL_PID=''",
+        "if command -v docker >/dev/null 2>&1 && docker ps --format '{{.Names}}' | grep -qx eezy-ml; then "
+        "docker logs -f --since 0s eezy-ml 2>&1 & "
+        "TAIL_PID=$!; "
+        "echo \"Tailing eezy-ml container logs (pid=$TAIL_PID)\"; "
+        "fi",
         "for i in $(seq 1 30); do "
-        "if curl -fsS http://127.0.0.1:5000/health >/dev/null 2>&1; then echo 'health-ok'; exit 0; fi; "
+        "if curl -fsS http://127.0.0.1:5000/health >/dev/null 2>&1; then "
+        "if [ -n \"$TAIL_PID\" ]; then kill \"$TAIL_PID\" >/dev/null 2>&1 || true; fi; "
+        "echo 'health-ok'; exit 0; "
+        "fi; "
         "sleep 2; "
         "done; "
+        "if [ -n \"$TAIL_PID\" ]; then kill \"$TAIL_PID\" >/dev/null 2>&1 || true; fi; "
         "echo 'Service did not become healthy on :5000 in time' >&2; exit 124",
     ]
 
@@ -615,31 +909,23 @@ def start_project(name):
 
     command_id = send_resp["Command"]["CommandId"]
 
-    status = "InProgress"
-    stdout = ""
-    stderr = ""
-    for _ in range(20):
-        time.sleep(2)
-        try:
-            inv = ssm_client.get_command_invocation(
-                CommandId=command_id, InstanceId=instance_id
-            )
-            status = inv.get("Status")
-            stdout = inv.get("StandardOutputContent", "")
-            stderr = inv.get("StandardErrorContent", "")
-            if status in {"Success", "Failed", "TimedOut", "Cancelled"}:
-                break
-        except ClientError:
-            continue
-
-    return {
-        "message": "start invoked",
-        "instance_id": instance_id,
-        "command_id": command_id,
-        "status": status,
-        "stdout": stdout,
-        "stderr": stderr,
-    }
+    result = collect_command_logs(command_id, instance_id)
+    if not (result.get("stdout", "").strip() or result.get("stderr", "").strip()):
+        raw_logs = _collect_ssm_agent_logs(instance_id, command_id)
+        if raw_logs:
+            result["stdout"] = raw_logs
+    if result.get("status") == "InProgress" and result.get("hook_detected") != "server_running":
+        final_inv = wait_for_command(command_id, instance_id, max_wait_seconds=1800, delay_seconds=2)
+        result = {
+            "command_id": command_id,
+            "status": final_inv.get("Status", "InProgress"),
+            "stdout": final_inv.get("StandardOutputContent", ""),
+            "stderr": final_inv.get("StandardErrorContent", ""),
+        }
+    result["message"] = "start invoked"
+    result["instance_id"] = instance_id
+    result.setdefault("logs", _merge_logs(result.get("stdout", ""), result.get("stderr", "")))
+    return result
 
 
 # ---------------------------------------------------------------------------
