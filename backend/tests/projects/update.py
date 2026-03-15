@@ -1,11 +1,13 @@
 import argparse
 import json
+import re
 import time
 
 import requests
 
 
 TERMINAL_STATUSES = {"Success", "Failed", "TimedOut", "Cancelled"}
+SERVER_RUNNING_HOOK_PATTERN = re.compile(r"=== Server is running \(PID: \d+\) ===")
 
 
 def update_project(api_url, project_name):
@@ -43,6 +45,7 @@ def stream_update_logs(api_url, project_name, command_id, start_byte=0, poll_sec
     next_byte = start_byte
     last_status = "Pending"
     idle_polls = 0
+    recent_output = ""
 
     while time.time() < deadline:
         payload = fetch_project_logs(api_url, project_name, command_id, next_byte)
@@ -53,6 +56,17 @@ def stream_update_logs(api_url, project_name, command_id, start_byte=0, poll_sec
             print(chunk, end="", flush=True)
             next_byte = payload.get("next_byte", next_byte + len(chunk.encode("utf-8")))
             idle_polls = 0
+            recent_output = (recent_output + chunk)[-1024:]
+
+            # Exit as soon as server-running hook is observed, regardless of SSM terminal status.
+            if SERVER_RUNNING_HOOK_PATTERN.search(recent_output):
+                return {
+                    "status": "Success",
+                    "next_byte": next_byte,
+                    "command_response_code": payload.get("command_response_code"),
+                    "command_stderr": payload.get("command_stderr", ""),
+                    "hook_detected": "server_running",
+                }
         else:
             idle_polls += 1
 
