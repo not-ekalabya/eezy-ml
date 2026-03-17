@@ -25,7 +25,14 @@ ALLOWED_INSTANCE_TYPES = {
     "t3a.micro", "t3a.small", "t3a.medium", "t3a.large",
     "m5.large", "m5.xlarge",
     "c5.large", "c5.xlarge",
+    "g4dn.xlarge",
 }
+
+DEFAULT_AUTO_CREATE_AMI_ID = "ami-0a7300e10f97b6153"
+DEFAULT_AUTO_CREATE_INSTANCE_TYPE = "g4dn.xlarge"
+DEFAULT_AUTO_CREATE_STORAGE_GB = 80
+DEFAULT_AUTO_CREATE_MARKET_TYPE = "on-demand"
+ALLOWED_MARKET_TYPES = {"on-demand", "spot"}
 
 ec2_client = boto3.client("ec2", region_name="us-east-1")
 ssm_client = boto3.client("ssm", region_name="us-east-1")
@@ -57,6 +64,28 @@ def validate_instance_type(instance_type):
             f"Instance type '{instance_type}' is not allowed. "
             f"Choose from: {', '.join(sorted(ALLOWED_INSTANCE_TYPES))}"
         )
+
+
+def validate_storage_gb(storage_gb):
+    if not isinstance(storage_gb, int):
+        raise ValueError("storage_gb must be an integer")
+    if storage_gb < 8:
+        raise ValueError("storage_gb must be at least 8")
+
+
+def validate_market_type(market_type):
+    if market_type not in ALLOWED_MARKET_TYPES:
+        raise ValueError(
+            "market_type must be one of: "
+            f"{', '.join(sorted(ALLOWED_MARKET_TYPES))}"
+        )
+
+
+def validate_ami_id(ami_id):
+    if not isinstance(ami_id, str) or not ami_id.strip():
+        raise ValueError("ami_id must be a non-empty string")
+    if not ami_id.startswith("ami-"):
+        raise ValueError("ami_id must start with 'ami-'")
 
 
 def validate_project_payload(name, repo_url, github_token, instance_id, require_instance=False):
@@ -155,6 +184,38 @@ def delete_project(name):
     return {"message": "deleted", "name": name}
 
 
+def auto_delete_project(name):
+    """Terminate a project's instance and remove the project from DynamoDB."""
+    if not name:
+        raise ValueError("name is required")
+
+    project = projects_table.get_item(Key={"name": name}).get("Item")
+    if not project:
+        raise ValueError(f"Project '{name}' does not exist")
+
+    instance_id = project.get("instance_id")
+    if not instance_id:
+        raise ValueError(f"Project '{name}' has no associated instance_id")
+    validate_instance_id(instance_id)
+
+    try:
+        ec2_client.terminate_instances(InstanceIds=[instance_id])
+    except ClientError as e:
+        if e.response["Error"].get("Code") == "InvalidInstanceID.NotFound":
+            # Continue deleting project record even when instance is already gone.
+            pass
+        else:
+            raise RuntimeError(f"Failed to terminate instance '{instance_id}': {e}")
+
+    delete_project(name)
+    return {
+        "message": "auto deleted",
+        "name": name,
+        "instance_id": instance_id,
+        "instance_status": "terminating",
+    }
+
+
 def modify_project(name, repo_url=None, github_token=None, instance_id=None):
     validate_project_payload(name, repo_url, github_token, instance_id)
 
@@ -195,6 +256,111 @@ def modify_project(name, repo_url=None, github_token=None, instance_id=None):
         raise
 
     return {"message": "updated", "project": resp.get("Attributes", {})}
+
+
+def auto_create_project(
+    name,
+    repo_url,
+    github_token,
+    instance_id=None,
+    ami_id=None,
+    instance_type=None,
+    storage_gb=None,
+    market_type=None,
+):
+    if instance_id is not None:
+        raise ValueError("instance_id must not be provided for auto_create")
+
+    validate_project_payload(name, repo_url, github_token, None, require_instance=False)
+
+    ami_id = ami_id or DEFAULT_AUTO_CREATE_AMI_ID
+    instance_type = instance_type or DEFAULT_AUTO_CREATE_INSTANCE_TYPE
+    storage_gb = storage_gb if storage_gb is not None else DEFAULT_AUTO_CREATE_STORAGE_GB
+    market_type = market_type or DEFAULT_AUTO_CREATE_MARKET_TYPE
+
+    validate_ami_id(ami_id)
+    validate_instance_type(instance_type)
+    validate_storage_gb(storage_gb)
+    validate_market_type(market_type)
+
+    # Keep project names unique before provisioning AWS resources.
+    existing = projects_table.get_item(Key={"name": name}).get("Item")
+    if existing:
+        raise ValueError(f"Project '{name}' already exists")
+
+    sg_id = get_or_create_security_group()
+
+    run_args = {
+        "ImageId": ami_id,
+        "InstanceType": instance_type,
+        "MinCount": 1,
+        "MaxCount": 1,
+        "SecurityGroupIds": [sg_id],
+        "BlockDeviceMappings": [
+            {
+                "DeviceName": "/dev/sda1",
+                "Ebs": {
+                    "VolumeSize": storage_gb,
+                    "VolumeType": "gp3",
+                    "DeleteOnTermination": True,
+                },
+            }
+        ],
+        "TagSpecifications": [
+            {
+                "ResourceType": "instance",
+                "Tags": [
+                    {"Key": "Name", "Value": f"eezy-ml-{name}"},
+                    {"Key": "Project", "Value": INSTANCE_TAG},
+                    {"Key": "ProjectName", "Value": name},
+                    {"Key": "RepoUrl", "Value": repo_url or ""},
+                ],
+            }
+        ],
+    }
+    if market_type == "spot":
+        run_args["InstanceMarketOptions"] = {
+            "MarketType": "spot",
+            "SpotOptions": {
+                "SpotInstanceType": "one-time",
+                "InstanceInterruptionBehavior": "terminate",
+            },
+        }
+
+    try:
+        resp = ec2_client.run_instances(**run_args)
+    except ClientError as e:
+        raise RuntimeError(f"Failed to launch instance: {e}")
+
+    new_instance_id = resp["Instances"][0]["InstanceId"]
+
+    try:
+        create_result = create_project(
+            name=name,
+            repo_url=repo_url,
+            github_token=github_token,
+            instance_id=new_instance_id,
+        )
+    except Exception:
+        # Best effort cleanup to avoid orphaned instances when project write fails.
+        try:
+            ec2_client.terminate_instances(InstanceIds=[new_instance_id])
+        except ClientError:
+            pass
+        raise
+
+    return {
+        "message": "auto created",
+        "project": create_result.get("project", {}),
+        "instance": {
+            "instance_id": new_instance_id,
+            "ami_id": ami_id,
+            "instance_type": instance_type,
+            "storage_gb": storage_gb,
+            "market_type": market_type,
+            "status": "launching",
+        },
+    }
 
 
 def setup_project(name):

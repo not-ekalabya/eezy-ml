@@ -10,6 +10,8 @@ import re
 
 from utils import (
     create_project,
+    auto_create_project,
+    auto_delete_project,
     list_projects,
     delete_project,
     modify_project,
@@ -42,6 +44,22 @@ def handler(event, context):
             instance_id=body.get("instance_id"),
         )
 
+    if path == "/project-manager/auto_create" and method == "POST":
+        body = _parse_body(event)
+        if body is None:
+            return _err(400, "Request body must be valid JSON")
+        return _safe(
+            auto_create_project,
+            name=body.get("name"),
+            repo_url=body.get("repo_url"),
+            github_token=body.get("github_token"),
+            instance_id=body.get("instance_id"),
+            ami_id=body.get("ami_id"),
+            instance_type=body.get("instance_type"),
+            storage_gb=body.get("storage_gb"),
+            market_type=body.get("market_type"),
+        )
+
     if path == "/project-manager/list" and method == "GET":
         return _safe(list_projects)
 
@@ -50,6 +68,12 @@ def handler(event, context):
         if body is None:
             return _err(400, "Request body must be valid JSON")
         return _safe(delete_project, name=body.get("name"))
+
+    if path == "/project-manager/auto_delete" and method == "POST":
+        body = _parse_body(event)
+        if body is None:
+            return _err(400, "Request body must be valid JSON")
+        return _safe(auto_delete_project, name=body.get("name"))
 
     if path == "/project-manager/modify" and method == "POST":
         body = _parse_body(event)

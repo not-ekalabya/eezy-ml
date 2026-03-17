@@ -24,6 +24,7 @@ Resources:
               Action:
                 - ec2:RunInstances
                 - ec2:DescribeInstances
+                - ec2:DescribeImages
                 - ec2:TerminateInstances
                 - ec2:CreateSecurityGroup
                 - ec2:AuthorizeSecurityGroupIngress
