@@ -77,3 +77,46 @@ export async function autoDeleteProjectApi(name: string) {
     },
   );
 }
+
+export type SetupProjectResponse = {
+  message: string;
+  command_id: string;
+  status: string;
+  stdout: string;
+  stderr: string;
+  logs: string;
+};
+
+export type ProjectLogsResponse = {
+  logs: string;
+  start_byte: number;
+  next_byte: number;
+  log_file_not_found: boolean;
+  command_status: string;
+  command_response_code: number | null;
+  command_stderr: string;
+};
+
+export async function setupProjectApi(projectName: string) {
+  return request<SetupProjectResponse>(
+    `/projects/${encodeURIComponent(projectName)}/setup`,
+    {
+      method: "POST",
+    },
+  );
+}
+
+export async function getProjectLogsApi(payload: {
+  projectName: string;
+  commandId: string;
+  startByte: number;
+}) {
+  const params = new URLSearchParams({
+    command_id: payload.commandId,
+    start_byte: String(payload.startByte),
+  });
+
+  return request<ProjectLogsResponse>(
+    `/projects/${encodeURIComponent(payload.projectName)}/logs?${params.toString()}`,
+  );
+}
