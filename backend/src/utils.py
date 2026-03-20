@@ -1358,3 +1358,51 @@ def proxy_predict(instance_id, payload):
         raise RuntimeError(f"Prediction failed ({e.code}): {error_body}")
     except urllib.error.URLError as e:
         raise RuntimeError(f"Cannot reach instance: {e.reason}")
+
+
+def get_project_status(project_name):
+    """Get the status of a project's instance, including public IP and inference URL."""
+    if not project_name:
+        raise ValueError("project_name is required")
+
+    project = projects_table.get_item(Key={"name": project_name}).get("Item")
+    if not project:
+        raise ValueError(f"Project '{project_name}' does not exist")
+
+    instance_id = project.get("instance_id")
+    if not instance_id:
+        raise ValueError(f"Project '{project_name}' has no associated instance_id")
+
+    status = get_instance_status(instance_id)
+    return {
+        "project_name": project_name,
+        "instance_id": instance_id,
+        "state": status.get("state"),
+        "public_ip": status.get("public_ip"),
+        "instance_type": status.get("instance_type"),
+        "service_status": status.get("service_status"),
+        "inference_url": status.get("inference_url"),
+    }
+
+
+def predict_project(project_name, features):
+    """Run one inference call for a project by resolving its instance first."""
+    if not project_name:
+        raise ValueError("project_name is required")
+    if not isinstance(features, str) or not features.strip():
+        raise ValueError("features is required and must be a non-empty string")
+
+    project = projects_table.get_item(Key={"name": project_name}).get("Item")
+    if not project:
+        raise ValueError(f"Project '{project_name}' does not exist")
+
+    instance_id = project.get("instance_id")
+    if not instance_id:
+        raise ValueError(f"Project '{project_name}' has no associated instance_id")
+
+    result = proxy_predict(instance_id, {"features": features})
+    return {
+        "project_name": project_name,
+        "instance_id": instance_id,
+        "result": result,
+    }

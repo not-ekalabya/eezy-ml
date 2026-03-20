@@ -120,3 +120,40 @@ export async function getProjectLogsApi(payload: {
     `/projects/${encodeURIComponent(payload.projectName)}/logs?${params.toString()}`,
   );
 }
+
+export type ProjectStatusResponse = {
+  project_name: string;
+  instance_id: string;
+  state: string;
+  public_ip: string | null;
+  instance_type: string;
+  service_status: string;
+  inference_url: string | null;
+};
+
+export async function getProjectStatusApi(projectName: string) {
+  return request<ProjectStatusResponse>(
+    `/projects/${encodeURIComponent(projectName)}/status`,
+  );
+}
+
+export type ProjectPredictResponse = {
+  project_name: string;
+  instance_id: string;
+  result: Record<string, unknown>;
+};
+
+export async function predictProjectApi(payload: {
+  projectName: string;
+  requestBody: Record<string, unknown>;
+  signal?: AbortSignal;
+}) {
+  return request<ProjectPredictResponse>(
+    `/projects/${encodeURIComponent(payload.projectName)}/predict`,
+    {
+      method: "POST",
+      signal: payload.signal,
+      body: JSON.stringify(payload.requestBody),
+    },
+  );
+}

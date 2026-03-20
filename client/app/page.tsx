@@ -186,6 +186,13 @@ export default function Home() {
                 </div>
                 <div className="col-span-2 flex justify-end gap-2 opacity-45 transition group-hover:opacity-100">
                   <Link
+                    href={`/projects/${encodeURIComponent(project.id)}/infer`}
+                    className="rounded p-2 text-[color:var(--on-surface-variant)] transition hover:bg-[color:var(--surface-bright)] hover:text-white"
+                    title="Query inference server"
+                  >
+                    <MonolithIcon name="search" className="h-[18px] w-[18px]" />
+                  </Link>
+                  <Link
                     href={`/projects/${encodeURIComponent(project.id)}/edit`}
                     className="rounded p-2 text-[color:var(--on-surface-variant)] transition hover:bg-[color:var(--surface-bright)] hover:text-white"
                   >

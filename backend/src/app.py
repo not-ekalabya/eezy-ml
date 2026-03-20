@@ -19,12 +19,16 @@ from utils import (
     start_project,
     update_project,
     get_project_logs,
+    get_project_status,
+    predict_project,
 )
 
 _PATH_SETUP = re.compile(r"^/projects/([^/]+)/setup/?$")
 _PATH_START = re.compile(r"^/projects/([^/]+)/start/?$")
 _PATH_UPDATE = re.compile(r"^/projects/([^/]+)/update/?$")
 _PATH_LOGS = re.compile(r"^/projects/([^/]+)/logs/?$")
+_PATH_STATUS = re.compile(r"^/projects/([^/]+)/status/?$")
+_PATH_PREDICT = re.compile(r"^/projects/([^/]+)/predict/?$")
 
 
 def handler(event, context):
@@ -112,6 +116,19 @@ def handler(event, context):
         except (ValueError, TypeError):
             return _err(400, "start_byte must be an integer")
         return _safe(get_project_logs, project_name, command_id, start_byte)
+
+    m = _PATH_STATUS.match(path)
+    if m and method == "GET":
+        project_name = m.group(1)
+        return _safe(get_project_status, project_name)
+
+    m = _PATH_PREDICT.match(path)
+    if m and method == "POST":
+        body = _parse_body(event)
+        if body is None:
+            return _err(400, "Request body must be valid JSON")
+        project_name = m.group(1)
+        return _safe(predict_project, project_name, body.get("features"))
 
     return _err(404, "Not found")
 
