@@ -1,18 +1,38 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { MonolithShell, sharedSideNav } from "@/app/components/monolith-shell";
 import { MonolithIcon } from "@/app/components/monolith-icon";
-import { BackendProject, listProjectsApi } from "@/lib/api";
+import {
+  BackendProject,
+  getProjectStatusApi,
+  listProjectsApi,
+  startProjectApi,
+  stopProjectApi,
+} from "@/lib/api";
 
 type UiProject = {
   id: string;
+  instanceId: string;
   type: string;
-  status: "Active" | "Paused";
+  status: "Active" | "Paused" | "Starting" | "Stopping";
   createdDate: string;
   icon: string;
 };
+
+function toUiStatus(state: string): UiProject["status"] {
+  if (state === "running") {
+    return "Active";
+  }
+  if (state === "pending") {
+    return "Starting";
+  }
+  if (state === "stopping") {
+    return "Stopping";
+  }
+  return "Paused";
+}
 
 function inferIcon(name: string): string {
   const value = name.toLowerCase();
@@ -45,6 +65,7 @@ function inferType(name: string): string {
 function mapProject(project: BackendProject): UiProject {
   return {
     id: project.name,
+    instanceId: project.instance_id || "",
     type: inferType(project.name),
     status: project.instance_id ? "Active" : "Paused",
     createdDate: "-",
@@ -56,17 +77,41 @@ export default function Home() {
   const [projects, setProjects] = useState<UiProject[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [actionMessage, setActionMessage] = useState<string | null>(null);
+  const [actingProjectId, setActingProjectId] = useState<string | null>(null);
+
+  const fetchProjects = useCallback(async () => {
+    const response = await listProjectsApi();
+    const mapped = response.projects.map(mapProject);
+
+    const withStatus = await Promise.all(
+      mapped.map(async (project) => {
+        if (!project.instanceId) {
+          return { ...project, status: "Paused" as const };
+        }
+
+        try {
+          const status = await getProjectStatusApi(project.id);
+          return { ...project, status: toUiStatus(status.state) };
+        } catch {
+          return project;
+        }
+      }),
+    );
+
+    return withStatus;
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
 
-    async function loadProjects() {
+    async function loadProjectsOnMount() {
       try {
         setLoading(true);
         setError(null);
-        const response = await listProjectsApi();
+        const mapped = await fetchProjects();
         if (!cancelled) {
-          setProjects(response.projects.map(mapProject));
+          setProjects(mapped);
         }
       } catch (e) {
         if (!cancelled) {
@@ -80,12 +125,32 @@ export default function Home() {
       }
     }
 
-    loadProjects();
+    loadProjectsOnMount();
 
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [fetchProjects]);
+
+  async function onToggleProject(project: UiProject) {
+    try {
+      setActingProjectId(project.id);
+      setError(null);
+      setActionMessage(null);
+
+      const action = project.status === "Paused" ? "start" : "stop";
+      const result = action === "start"
+        ? await startProjectApi(project.id)
+        : await stopProjectApi(project.id);
+      const mapped = await fetchProjects();
+      setProjects(mapped);
+      setActionMessage(`Project '${project.id}' ${result.status}.`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to toggle project state");
+    } finally {
+      setActingProjectId(null);
+    }
+  }
 
   const hasProjects = useMemo(() => projects.length > 0, [projects.length]);
 
@@ -140,6 +205,12 @@ export default function Home() {
               </div>
             ) : null}
 
+            {actionMessage ? (
+              <div className="rounded-lg border border-white/20 bg-[color:var(--surface-container-low)] px-6 py-4 text-sm text-white/80">
+                {actionMessage}
+              </div>
+            ) : null}
+
             {projects.map((project) => (
               <div
                 key={project.id}
@@ -166,6 +237,10 @@ export default function Home() {
                         "h-2 w-2 rounded-full",
                         project.status === "Active"
                           ? "animate-pulse bg-white"
+                          : project.status === "Starting"
+                            ? "bg-amber-400"
+                            : project.status === "Stopping"
+                              ? "bg-orange-400"
                           : "bg-[color:var(--outline-variant)]",
                       ].join(" ")}
                     />
@@ -174,6 +249,8 @@ export default function Home() {
                         "text-xs font-medium",
                         project.status === "Active"
                           ? "text-white"
+                          : project.status === "Starting" || project.status === "Stopping"
+                            ? "text-amber-200"
                           : "text-[color:var(--on-surface-variant)]",
                       ].join(" ")}
                     >
@@ -185,6 +262,18 @@ export default function Home() {
                   {project.createdDate}
                 </div>
                 <div className="col-span-2 flex justify-end gap-2 opacity-45 transition group-hover:opacity-100">
+                  <button
+                    type="button"
+                    onClick={() => onToggleProject(project)}
+                    disabled={actingProjectId === project.id || !project.instanceId || project.status === "Stopping" || project.status === "Starting"}
+                    title={!project.instanceId ? "No instance assigned" : project.status === "Paused" ? "Start project instance" : "Stop project instance"}
+                    className="rounded p-2 text-[color:var(--on-surface-variant)] transition hover:bg-[color:var(--surface-bright)] hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    <MonolithIcon
+                      name={project.status === "Paused" ? "play_arrow" : "pause"}
+                      className="h-[18px] w-[18px]"
+                    />
+                  </button>
                   <Link
                     href={`/projects/${encodeURIComponent(project.id)}/infer`}
                     className="rounded p-2 text-[color:var(--on-surface-variant)] transition hover:bg-[color:var(--surface-bright)] hover:text-white"

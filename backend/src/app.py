@@ -17,6 +17,7 @@ from utils import (
     modify_project,
     setup_project,
     start_project,
+    stop_project,
     update_project,
     get_project_logs,
     get_project_status,
@@ -25,6 +26,7 @@ from utils import (
 
 _PATH_SETUP = re.compile(r"^/projects/([^/]+)/setup/?$")
 _PATH_START = re.compile(r"^/projects/([^/]+)/start/?$")
+_PATH_STOP = re.compile(r"^/projects/([^/]+)/stop/?$")
 _PATH_UPDATE = re.compile(r"^/projects/([^/]+)/update/?$")
 _PATH_LOGS = re.compile(r"^/projects/([^/]+)/logs/?$")
 _PATH_STATUS = re.compile(r"^/projects/([^/]+)/status/?$")
@@ -100,6 +102,11 @@ def handler(event, context):
     if m and method == "POST":
         project_name = m.group(1)
         return _safe(start_project, project_name)
+
+    m = _PATH_STOP.match(path)
+    if m and method == "POST":
+        project_name = m.group(1)
+        return _safe(stop_project, project_name)
 
     m = _PATH_UPDATE.match(path)
     if m and method == "POST":

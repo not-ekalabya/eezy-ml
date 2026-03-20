@@ -87,6 +87,16 @@ export type SetupProjectResponse = {
   logs: string;
 };
 
+export type StartProjectResponse = {
+  message: string;
+  instance_id: string;
+  status: string;
+  command_id?: string;
+  stdout?: string;
+  stderr?: string;
+  logs?: string;
+};
+
 export type ProjectLogsResponse = {
   logs: string;
   start_byte: number;
@@ -100,6 +110,31 @@ export type ProjectLogsResponse = {
 export async function setupProjectApi(projectName: string) {
   return request<SetupProjectResponse>(
     `/projects/${encodeURIComponent(projectName)}/setup`,
+    {
+      method: "POST",
+    },
+  );
+}
+
+export async function startProjectApi(projectName: string) {
+  return request<StartProjectResponse>(
+    `/projects/${encodeURIComponent(projectName)}/start`,
+    {
+      method: "POST",
+    },
+  );
+}
+
+export type StopProjectResponse = {
+  message: string;
+  name: string;
+  instance_id: string;
+  status: string;
+};
+
+export async function stopProjectApi(projectName: string) {
+  return request<StopProjectResponse>(
+    `/projects/${encodeURIComponent(projectName)}/stop`,
     {
       method: "POST",
     },

@@ -1094,6 +1094,63 @@ def start_project(name):
     return result
 
 
+def stop_project(name):
+    """Stop a project's EC2 instance."""
+    if not name:
+        raise ValueError("name is required")
+
+    project = projects_table.get_item(Key={"name": name}).get("Item")
+    if not project:
+        raise ValueError(f"Project '{name}' does not exist")
+
+    instance_id = project.get("instance_id")
+    if not instance_id:
+        raise ValueError(f"Project '{name}' has no associated instance_id")
+    validate_instance_id(instance_id)
+
+    try:
+        inst = ec2_client.describe_instances(InstanceIds=[instance_id])
+        reservations = inst.get("Reservations", [])
+        if not reservations or not reservations[0].get("Instances"):
+            raise ValueError(f"Instance '{instance_id}' not found")
+        state = reservations[0]["Instances"][0]["State"]["Name"]
+    except ClientError as e:
+        raise RuntimeError(f"Failed to check instance state: {e}")
+
+    if state == "stopped":
+        return {
+            "message": "already stopped",
+            "name": name,
+            "instance_id": instance_id,
+            "status": "stopped",
+        }
+
+    if state == "stopping":
+        return {
+            "message": "stopping",
+            "name": name,
+            "instance_id": instance_id,
+            "status": "stopping",
+        }
+
+    if state not in {"running", "pending"}:
+        raise ValueError(
+            f"Instance '{instance_id}' is in state '{state}', expected 'running', 'pending', or 'stopped'"
+        )
+
+    try:
+        ec2_client.stop_instances(InstanceIds=[instance_id])
+    except ClientError as e:
+        raise RuntimeError(f"Failed to stop instance '{instance_id}': {e}")
+
+    return {
+        "message": "stopping",
+        "name": name,
+        "instance_id": instance_id,
+        "status": "stopping",
+    }
+
+
 # ---------------------------------------------------------------------------
 # AWS helpers
 # ---------------------------------------------------------------------------
