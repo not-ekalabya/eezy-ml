@@ -30,7 +30,7 @@ export function MonolithShell({
   showCreateResource = false,
 }: MonolithShellProps) {
   return (
-    <div className="min-h-screen bg-background text-foreground">
+    <div className="h-screen overflow-hidden bg-background text-foreground no-scrollbar">
       <header className="sticky top-0 z-40 flex h-16 items-center justify-between border-b border-white/5 bg-[#131313] px-4 md:px-6">
         <div className="flex items-center gap-5 md:gap-8">
           <span className="text-base font-extrabold tracking-tighter text-white md:text-lg">
@@ -69,8 +69,8 @@ export function MonolithShell({
         </div>
       </header>
 
-      <div className="flex min-h-[calc(100vh-64px)]">
-        <aside className="hidden w-64 flex-col bg-[#1c1b1b] md:flex">
+      <div className="flex h-[calc(100vh-64px)] overflow-hidden">
+        <aside className="no-scrollbar hidden w-64 shrink-0 overflow-y-auto bg-[#1c1b1b] md:flex md:flex-col">
           <div className="px-6 pb-5 pt-6">
             <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-neutral-500">
               Console
@@ -119,7 +119,9 @@ export function MonolithShell({
           </div>
         </aside>
 
-        {children}
+        <div className="no-scrollbar flex-1 overflow-y-auto">
+          {children}
+        </div>
       </div>
     </div>
   );

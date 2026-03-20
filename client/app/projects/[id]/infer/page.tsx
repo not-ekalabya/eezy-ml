@@ -139,36 +139,50 @@ function parseFeatures(mode: FeatureMode, prompt: string, arrayInput: string): s
 async function fetchSchemaFromRepoRoot(payload: {
   owner: string;
   repo: string;
-  githubToken: string;
-}): Promise<{ schema: RequestSchema; sourceFile: string }> {
+  githubToken?: string;
+}): Promise<{ schema: RequestSchema; sourceFile: string; authMode: "token" | "none" }> {
+  const diagnostics: string[] = [];
+
   for (const fileName of REQUEST_SCHEMA_CANDIDATE_FILES) {
-    const response = await fetch(
-      `https://api.github.com/repos/${payload.owner}/${payload.repo}/contents/${fileName}`,
-      {
-        headers: {
-          Accept: "application/vnd.github+json",
-          Authorization: `Bearer ${payload.githubToken}`,
+    const authAttempts: Array<{ mode: "token" | "none"; token?: string }> = payload.githubToken
+      ? [{ mode: "token", token: payload.githubToken }, { mode: "none" }]
+      : [{ mode: "none" }];
+
+    for (const auth of authAttempts) {
+      const headers: Record<string, string> = {
+        Accept: "application/vnd.github+json",
+      };
+      if (auth.token) {
+        headers.Authorization = `Bearer ${auth.token}`;
+      }
+
+      const response = await fetch(
+        `https://api.github.com/repos/${payload.owner}/${payload.repo}/contents/${fileName}`,
+        {
+          headers,
+          cache: "no-store",
         },
-        cache: "no-store",
-      },
-    );
+      );
 
-    if (!response.ok) {
-      continue;
+      if (!response.ok) {
+        diagnostics.push(`${fileName} (${auth.mode}): ${response.status}`);
+        continue;
+      }
+
+      const body = (await response.json()) as { content?: string; encoding?: string };
+      if (body.encoding !== "base64" || !body.content) {
+        diagnostics.push(`${fileName} (${auth.mode}): invalid-content`);
+        continue;
+      }
+
+      const raw = atob(body.content.replace(/\n/g, ""));
+      const parsed = JSON.parse(raw) as RequestSchema;
+      return { schema: parsed, sourceFile: fileName, authMode: auth.mode };
     }
-
-    const body = (await response.json()) as { content?: string; encoding?: string };
-    if (body.encoding !== "base64" || !body.content) {
-      continue;
-    }
-
-    const raw = atob(body.content.replace(/\n/g, ""));
-    const parsed = JSON.parse(raw) as RequestSchema;
-    return { schema: parsed, sourceFile: fileName };
   }
 
   throw new Error(
-    `Unable to find request schema in repository root. Tried: ${REQUEST_SCHEMA_CANDIDATE_FILES.join(", ")}`,
+    `Unable to find request schema in repository root. Tried: ${REQUEST_SCHEMA_CANDIDATE_FILES.join(", ")}. Diagnostics: ${diagnostics.join("; ")}`,
   );
 }
 
@@ -307,18 +321,18 @@ export default function InferPage() {
         }
 
         const coordinates = parseRepoCoordinates(project.repo_url || "");
-        if (!coordinates || !project.github_token) {
-          throw new Error("Missing GitHub repository URL or token; using fallback schema");
+        if (!coordinates) {
+          throw new Error("Missing or invalid GitHub repository URL; using fallback schema");
         }
 
-        const { schema: parsed, sourceFile } = await fetchSchemaFromRepoRoot({
+        const { schema: parsed, sourceFile, authMode } = await fetchSchemaFromRepoRoot({
           owner: coordinates.owner,
           repo: coordinates.repo,
-          githubToken: project.github_token,
+          githubToken: project.github_token || undefined,
         });
         if (!cancelled) {
           setRequestSchema(parsed);
-          setSchemaSource(`${coordinates.owner}/${coordinates.repo}/${sourceFile}`);
+          setSchemaSource(`${coordinates.owner}/${coordinates.repo}/${sourceFile} (${authMode})`);
 
           setMaxNewTokens(parsed.properties?.max_new_tokens?.default ?? 96);
           setTemperature(parsed.properties?.temperature?.default ?? 0.7);
@@ -405,7 +419,7 @@ export default function InferPage() {
         sideLinks={sharedSideNav}
         activeSideLink="Projects"
       >
-        <div className="flex items-center justify-center py-16">
+        <div className="flex items-center justify-center py-16 mx-auto">
           <p className="text-sm text-white/60">Loading project status...</p>
         </div>
       </MonolithShell>
@@ -478,62 +492,65 @@ export default function InferPage() {
       sideLinks={sharedSideNav}
       activeSideLink="Projects"
     >
-      <div className="space-y-8 py-8">
+      <div className="mx-auto max-w-4xl space-y-10 py-16 px-4">
         {/* Header */}
         <div>
-          <h1 className="text-3xl font-bold text-white">Query Inference Server</h1>
-          <p className="mt-2 text-sm text-white/60">Project: {status.project_name}</p>
-          <p className="mt-1 text-xs text-white/50">Request schema source: {schemaSource}</p>
+          <h1 className="text-4xl font-extrabold tracking-tight text-white">Query Inference Server</h1>
+          <p className="mt-2 text-sm text-[color:var(--on-surface-variant)]">Project: {status.project_name}</p>
+          <p className="mt-1 text-[11px] uppercase tracking-[0.08em] text-white/45">Request schema source: {schemaSource}</p>
           {schemaError ? <p className="mt-1 text-xs text-amber-400">{schemaError}</p> : null}
         </div>
 
         {/* Status Card */}
-        <div className="rounded-lg border border-white/10 bg-[color:var(--surface-container-low)] p-6">
-          <h2 className="mb-4 text-sm font-bold uppercase tracking-widest text-white/90">
+        <div className="rounded-md bg-[color:var(--surface-container-low)] p-7">
+          <h2 className="mb-5 text-[11px] font-bold uppercase tracking-[0.1em] text-white/75">
             Instance Status
           </h2>
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
-              <p className="text-xs text-white/60">Instance Type</p>
+              <p className="text-[11px] uppercase tracking-[0.08em] text-[color:var(--on-surface-variant)]">Instance Type</p>
               <p className="mt-1 text-sm font-medium text-white">{status.instance_type}</p>
             </div>
             <div>
-              <p className="text-xs text-white/60">State</p>
+              <p className="text-[11px] uppercase tracking-[0.08em] text-[color:var(--on-surface-variant)]">State</p>
               <p className="mt-1 text-sm font-medium text-white capitalize">{status.state}</p>
             </div>
             <div>
-              <p className="text-xs text-white/60">Public IP</p>
+              <p className="text-[11px] uppercase tracking-[0.08em] text-[color:var(--on-surface-variant)]">Public IP</p>
               <p className="mt-1 text-sm font-mono text-white/85">{status.public_ip || "-"}</p>
             </div>
             <div>
-              <p className="text-xs text-white/60">Service Status</p>
+              <p className="text-[11px] uppercase tracking-[0.08em] text-[color:var(--on-surface-variant)]">Service Status</p>
               <div className="mt-1 flex items-center gap-2">
                 <div
-                  className={`h-2 w-2 rounded-full ${isServiceReady ? "bg-green-500" : "bg-amber-500"}`}
+                  className={`h-2 w-2 rounded-full ${isServiceReady ? "animate-pulse bg-white" : "bg-[color:var(--outline-variant)]"}`}
                 />
                 <p className="text-sm font-medium text-white capitalize">{shortServiceStatus}</p>
               </div>
             </div>
           </div>
           {!isServiceReady ? (
-            <p className="mt-4 text-xs text-white/60">{queryUnavailableReason}</p>
+            <div className="mt-4 rounded-sm border border-[color:var(--error)]/35 bg-[color:var(--error)]/10 px-3 py-2">
+              <p className="text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--error)]">Warning</p>
+              <p className="mt-1 text-xs text-[color:var(--error)]/90">{queryUnavailableReason}</p>
+            </div>
           ) : null}
         </div>
 
         {/* Query Form */}
         <form onSubmit={onSubmit} className="space-y-6">
-          <div className="space-y-4 rounded-lg border border-white/10 bg-[color:var(--surface-container-low)] p-6">
-            <h2 className="text-sm font-bold uppercase tracking-widest text-white/90">
+          <div className="space-y-5 rounded-md bg-[color:var(--surface-container)] p-7">
+            <h2 className="text-[11px] font-bold uppercase tracking-[0.1em] text-white/75">
               Query
             </h2>
 
             <div className="space-y-2">
-              <label className="text-xs font-medium text-white/80">Features input type</label>
+              <label className="text-[11px] font-bold uppercase tracking-[0.08em] text-[color:var(--on-surface-variant)]">Features input type</label>
               <select
                 value={featureMode}
                 onChange={(event) => setFeatureMode(event.target.value as FeatureMode)}
                 disabled={querying || !isServiceReady}
-                className="w-full rounded-sm bg-[color:var(--surface-container-highest)] p-4 text-white focus:outline-none disabled:opacity-60"
+                className="w-full rounded-sm border-b border-b-transparent bg-[color:var(--surface-container-highest)] p-4 text-white transition focus:border-b-white focus:outline-none disabled:opacity-60"
               >
                 {featureModes.includes("string") ? (
                   <option value="string">Single prompt string</option>
@@ -548,7 +565,7 @@ export default function InferPage() {
             </div>
 
             <div className="space-y-2">
-              <label className="text-xs font-medium text-white/80">
+              <label className="text-[11px] font-bold uppercase tracking-[0.08em] text-[color:var(--on-surface-variant)]">
                 {featureMode === "string" ? "Prompt" : "Features JSON"}
               </label>
               {featureMode === "string" ? (
@@ -557,7 +574,7 @@ export default function InferPage() {
                   onChange={(e) => setPrompt(e.target.value)}
                   disabled={querying || !isServiceReady}
                   rows={4}
-                  className="w-full rounded-sm bg-[color:var(--surface-container-highest)] p-4 text-white placeholder:text-neutral-600 focus:outline-none disabled:opacity-60"
+                  className="w-full rounded-sm border-b border-b-transparent bg-[color:var(--surface-container-highest)] p-4 text-white placeholder:text-neutral-600 transition focus:border-b-white focus:outline-none disabled:opacity-60"
                   placeholder="Enter your prompt..."
                 />
               ) : (
@@ -566,7 +583,7 @@ export default function InferPage() {
                   onChange={(e) => setArrayFeaturesInput(e.target.value)}
                   disabled={querying || !isServiceReady}
                   rows={6}
-                  className="w-full rounded-sm bg-[color:var(--surface-container-highest)] p-4 font-mono text-sm text-white placeholder:text-neutral-600 focus:outline-none disabled:opacity-60"
+                  className="w-full rounded-sm border-b border-b-transparent bg-[color:var(--surface-container-highest)] p-4 font-mono text-sm text-white placeholder:text-neutral-600 transition focus:border-b-white focus:outline-none disabled:opacity-60"
                   placeholder={featureMode === "single-array" ? '["Return", "only", "the", "word", "alpha."]' : '[["Return the word one."], ["Return the word two."]]'}
                 />
               )}
@@ -574,21 +591,21 @@ export default function InferPage() {
 
             {hasProperty(requestSchema, "max_new_tokens") ? (
               <div className="space-y-2">
-                <label className="text-xs font-medium text-white/80">max_new_tokens</label>
+                <label className="text-[11px] font-bold uppercase tracking-[0.08em] text-[color:var(--on-surface-variant)]">max_new_tokens</label>
                 <input
                   type="number"
                   min="1"
                   value={maxNewTokens}
                   onChange={(e) => setMaxNewTokens(Math.max(1, parseInt(e.target.value, 10) || 96))}
                   disabled={querying || !isServiceReady}
-                  className="w-full rounded-sm bg-[color:var(--surface-container-highest)] p-4 text-white placeholder:text-neutral-600 focus:outline-none disabled:opacity-60"
+                  className="w-full rounded-sm border-b border-b-transparent bg-[color:var(--surface-container-highest)] p-4 text-white placeholder:text-neutral-600 transition focus:border-b-white focus:outline-none disabled:opacity-60"
                 />
               </div>
             ) : null}
 
             {hasProperty(requestSchema, "temperature") ? (
               <div className="space-y-2">
-                <label className="text-xs font-medium text-white/80">temperature</label>
+                <label className="text-[11px] font-bold uppercase tracking-[0.08em] text-[color:var(--on-surface-variant)]">temperature</label>
                 <input
                   type="number"
                   min="0"
@@ -596,14 +613,14 @@ export default function InferPage() {
                   value={temperature}
                   onChange={(e) => setTemperature(Math.max(0, parseFloat(e.target.value) || 0))}
                   disabled={querying || !isServiceReady}
-                  className="w-full rounded-sm bg-[color:var(--surface-container-highest)] p-4 text-white placeholder:text-neutral-600 focus:outline-none disabled:opacity-60"
+                  className="w-full rounded-sm border-b border-b-transparent bg-[color:var(--surface-container-highest)] p-4 text-white placeholder:text-neutral-600 transition focus:border-b-white focus:outline-none disabled:opacity-60"
                 />
               </div>
             ) : null}
 
             {hasProperty(requestSchema, "top_p") ? (
               <div className="space-y-2">
-                <label className="text-xs font-medium text-white/80">top_p</label>
+                <label className="text-[11px] font-bold uppercase tracking-[0.08em] text-[color:var(--on-surface-variant)]">top_p</label>
                 <input
                   type="number"
                   min="0.0001"
@@ -612,7 +629,7 @@ export default function InferPage() {
                   value={topP}
                   onChange={(e) => setTopP(Math.max(0.0001, Math.min(1, parseFloat(e.target.value) || 0.9)))}
                   disabled={querying || !isServiceReady}
-                  className="w-full rounded-sm bg-[color:var(--surface-container-highest)] p-4 text-white placeholder:text-neutral-600 focus:outline-none disabled:opacity-60"
+                  className="w-full rounded-sm border-b border-b-transparent bg-[color:var(--surface-container-highest)] p-4 text-white placeholder:text-neutral-600 transition focus:border-b-white focus:outline-none disabled:opacity-60"
                 />
               </div>
             ) : null}
@@ -631,14 +648,14 @@ export default function InferPage() {
             ) : null}
 
             <div className="space-y-2">
-              <label className="text-xs font-medium text-white/80">Request preview</label>
-              <pre className="max-h-56 overflow-y-auto rounded-sm bg-[color:var(--surface-container-highest)] p-4 text-xs text-white/80">
+              <label className="text-[11px] font-bold uppercase tracking-[0.08em] text-[color:var(--on-surface-variant)]">Request preview</label>
+              <pre className="max-h-56 overflow-y-auto rounded-sm bg-[color:var(--surface-container-lowest)] p-4 text-xs text-white/80">
                 {previewRequestBody}
               </pre>
             </div>
 
             <div className="space-y-2">
-              <label className="text-xs font-medium text-white/80">Timeout (seconds)</label>
+              <label className="text-[11px] font-bold uppercase tracking-[0.08em] text-[color:var(--on-surface-variant)]">Timeout (seconds)</label>
               <input
                 type="number"
                 min="1"
@@ -646,11 +663,11 @@ export default function InferPage() {
                 value={timeout}
                 onChange={(e) => setTimeout(Math.max(1, parseInt(e.target.value) || 30))}
                 disabled={querying || !isServiceReady}
-                className="w-full rounded-sm bg-[color:var(--surface-container-highest)] p-4 text-white placeholder:text-neutral-600 focus:outline-none disabled:opacity-60"
+                className="w-full rounded-sm border-b border-b-transparent bg-[color:var(--surface-container-highest)] p-4 text-white placeholder:text-neutral-600 transition focus:border-b-white focus:outline-none disabled:opacity-60"
               />
             </div>
 
-            <div className="flex gap-4">
+            <div className="flex justify-between gap-4">
               <button
                 type="button"
                 onClick={() => router.push("/")}
@@ -662,7 +679,7 @@ export default function InferPage() {
               <button
                 type="submit"
                 disabled={querying || !isServiceReady}
-                className="rounded-sm bg-white px-6 py-3 font-bold text-black transition hover:bg-neutral-200 disabled:cursor-not-allowed disabled:opacity-60"
+                className="rounded-sm bg-[linear-gradient(45deg,#FFFFFF,#D4D4D4)] px-6 py-3 font-bold text-black transition hover:brightness-105 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {querying ? "Querying..." : "Send Query"}
               </button>
@@ -676,9 +693,9 @@ export default function InferPage() {
           )}
 
           {result && (
-            <div className="space-y-4 rounded-lg border border-green-500/30 bg-green-500/10 p-6">
+            <div className="space-y-4 rounded-md bg-[color:var(--surface-container-low)] p-6">
               <div className="flex items-center justify-between gap-4">
-                <h3 className="text-sm font-bold uppercase tracking-widest text-green-400">
+                <h3 className="text-[11px] font-bold uppercase tracking-[0.1em] text-white/75">
                   Parsed Response
                 </h3>
                 <label className="flex cursor-pointer items-center gap-2 text-xs text-white/80">
@@ -692,7 +709,7 @@ export default function InferPage() {
                 </label>
               </div>
 
-              <div className="rounded-md bg-[color:var(--surface-container-lowest)] p-4 text-sm leading-6 text-white/90">
+              <div className="rounded-sm bg-[color:var(--surface-container-lowest)] p-4 text-sm leading-6 text-white/90">
                 {parsedPrediction || parsedPredictions || "No parsed prediction text available."}
               </div>
 

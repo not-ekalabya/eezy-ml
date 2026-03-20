@@ -37,3 +37,16 @@ body {
   background: linear-gradient(160deg, rgba(33, 33, 33, 0.9), rgba(20, 20, 20, 0.95));
   border: 1px solid rgba(71, 71, 71, 0.35);
 }
+
+button {
+  cursor: pointer;
+}
+
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
