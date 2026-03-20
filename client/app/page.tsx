@@ -1,9 +1,94 @@
+"use client";
+
 import Link from "next/link";
+import { useEffect, useMemo, useState } from "react";
 import { MonolithShell, sharedSideNav } from "@/app/components/monolith-shell";
-import { projects } from "@/app/components/monolith-data";
 import { MonolithIcon } from "@/app/components/monolith-icon";
+import { BackendProject, listProjectsApi } from "@/lib/api";
+
+type UiProject = {
+  id: string;
+  type: string;
+  status: "Active" | "Paused";
+  createdDate: string;
+  icon: string;
+};
+
+function inferIcon(name: string): string {
+  const value = name.toLowerCase();
+  if (value.includes("db")) {
+    return "database";
+  }
+  if (value.includes("edge") || value.includes("cdn")) {
+    return "language";
+  }
+  if (value.includes("worker") || value.includes("gpu")) {
+    return "memory";
+  }
+  return "terminal";
+}
+
+function inferType(name: string): string {
+  const value = name.toLowerCase();
+  if (value.includes("db")) {
+    return "storage";
+  }
+  if (value.includes("edge") || value.includes("cdn")) {
+    return "cdn";
+  }
+  if (value.includes("worker") || value.includes("gpu")) {
+    return "compute";
+  }
+  return "microservice";
+}
+
+function mapProject(project: BackendProject): UiProject {
+  return {
+    id: project.name,
+    type: inferType(project.name),
+    status: project.instance_id ? "Active" : "Paused",
+    createdDate: "-",
+    icon: inferIcon(project.name),
+  };
+}
 
 export default function Home() {
+  const [projects, setProjects] = useState<UiProject[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadProjects() {
+      try {
+        setLoading(true);
+        setError(null);
+        const response = await listProjectsApi();
+        if (!cancelled) {
+          setProjects(response.projects.map(mapProject));
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setError(e instanceof Error ? e.message : "Failed to load projects");
+          setProjects([]);
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
+    }
+
+    loadProjects();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const hasProjects = useMemo(() => projects.length > 0, [projects.length]);
+
   return (
     <MonolithShell
       topLinks={[
@@ -42,6 +127,18 @@ export default function Home() {
               <div className="col-span-2">Created Date</div>
               <div className="col-span-2 text-right">Actions</div>
             </div>
+
+            {loading ? (
+              <div className="rounded-lg border border-white/10 bg-[color:var(--surface-container-low)] px-6 py-8 text-sm text-[color:var(--on-surface-variant)]">
+                Loading projects...
+              </div>
+            ) : null}
+
+            {error ? (
+              <div className="rounded-lg border border-[color:var(--error)]/30 bg-[color:var(--surface-container-low)] px-6 py-8 text-sm text-[color:var(--error)]">
+                {error}
+              </div>
+            ) : null}
 
             {projects.map((project) => (
               <div
@@ -89,13 +186,13 @@ export default function Home() {
                 </div>
                 <div className="col-span-2 flex justify-end gap-2 opacity-45 transition group-hover:opacity-100">
                   <Link
-                    href={`/projects/${project.id}/edit`}
+                    href={`/projects/${encodeURIComponent(project.id)}/edit`}
                     className="rounded p-2 text-[color:var(--on-surface-variant)] transition hover:bg-[color:var(--surface-bright)] hover:text-white"
                   >
                     <MonolithIcon name="edit" className="h-[18px] w-[18px]" />
                   </Link>
                   <Link
-                    href={`/projects/${project.id}/delete`}
+                    href={`/projects/${encodeURIComponent(project.id)}/delete`}
                     className="rounded p-2 text-[color:var(--on-surface-variant)] transition hover:bg-[color:var(--error-container)]/20 hover:text-[color:var(--error)]"
                   >
                     <MonolithIcon name="delete" className="h-[18px] w-[18px]" />
@@ -110,13 +207,20 @@ export default function Home() {
               name="dashboard_customize"
               className="mx-auto mb-3 h-10 w-10 text-[color:var(--on-surface-variant)]"
             />
-            <h3 className="font-medium text-white">Ready for more?</h3>
+            <h3 className="font-medium text-white">
+              {hasProjects ? "Ready for more?" : "No projects yet"}
+            </h3>
             <p className="mb-6 mt-1 text-sm text-[color:var(--on-surface-variant)]">
-              Create a new architectural module to expand your monolith.
+              {hasProjects
+                ? "Create a new architectural module to expand your monolith."
+                : "Create your first project to start provisioning infrastructure."}
             </p>
-            <button className="border border-white/25 px-6 py-2 text-xs font-bold uppercase tracking-widest text-white transition hover:bg-[color:var(--surface-container)]">
-              Quick Start Guide
-            </button>
+            <Link
+              href="/projects/new"
+              className="inline-flex border border-white/25 px-6 py-2 text-xs font-bold uppercase tracking-widest text-white transition hover:bg-[color:var(--surface-container)]"
+            >
+              Create Project
+            </Link>
           </div>
         </div>
       </main>

@@ -1,17 +1,86 @@
+"use client";
+
 import Link from "next/link";
+import { FormEvent, useEffect, useState } from "react";
+import { useParams, useRouter } from "next/navigation";
 import {
   MonolithShell,
   sharedSideNav,
 } from "@/app/components/monolith-shell";
 import { currentConfig } from "@/app/components/monolith-data";
 import { MonolithIcon } from "@/app/components/monolith-icon";
+import { listProjectsApi, modifyProjectApi } from "@/lib/api";
 
-type EditProjectProps = {
-  params: Promise<{ id: string }>;
-};
+export default function EditProjectPage() {
+  const router = useRouter();
+  const params = useParams<{ id: string }>();
+  const id = decodeURIComponent(params.id);
 
-export default async function EditProjectPage({ params }: EditProjectProps) {
-  const { id } = await params;
+  const [repoUrl, setRepoUrl] = useState("");
+  const [githubToken, setGithubToken] = useState("");
+  const [instanceId, setInstanceId] = useState("");
+  const [instanceType, setInstanceType] = useState("g4dn.xlarge");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadProject() {
+      try {
+        setLoading(true);
+        setError(null);
+        const response = await listProjectsApi();
+        const project = response.projects.find((item) => item.name === id);
+        if (!project) {
+          throw new Error(`Project '${id}' not found`);
+        }
+
+        if (!cancelled) {
+          setRepoUrl(project.repo_url || "");
+          setGithubToken(project.github_token || "");
+          setInstanceId(project.instance_id || "");
+        }
+      } catch (e) {
+        if (!cancelled) {
+          setError(e instanceof Error ? e.message : "Failed to load project");
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
+    }
+
+    loadProject();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [id]);
+
+  async function onSave(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSaving(true);
+    setError(null);
+    setSuccess(null);
+
+    try {
+      await modifyProjectApi({
+        name: id,
+        repo_url: repoUrl.trim(),
+        github_token: githubToken,
+        instance_id: instanceId.trim(),
+      });
+      setSuccess("Project updated successfully.");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to save changes");
+    } finally {
+      setSaving(false);
+    }
+  }
 
   return (
     <MonolithShell
@@ -55,7 +124,7 @@ export default async function EditProjectPage({ params }: EditProjectProps) {
         </header>
 
         <div className="grid grid-cols-1 gap-10 lg:grid-cols-12 lg:gap-16">
-          <div className="space-y-14 lg:col-span-8">
+          <form className="space-y-14 lg:col-span-8" onSubmit={onSave}>
             <section>
               <div className="mb-8 flex items-center gap-3">
                 <MonolithIcon name="source" className="h-5 w-5 text-white" />
@@ -70,7 +139,9 @@ export default async function EditProjectPage({ params }: EditProjectProps) {
                     GitHub Repository URL
                   </label>
                   <input
-                    defaultValue="https://github.com/monolith-org/core-api-v2"
+                    value={repoUrl}
+                    onChange={(event) => setRepoUrl(event.target.value)}
+                    required
                     className="h-14 w-full bg-[color:var(--surface-container-highest)] px-4 text-white focus:outline-none"
                   />
                 </div>
@@ -82,7 +153,8 @@ export default async function EditProjectPage({ params }: EditProjectProps) {
                   <div className="relative">
                     <input
                       type="password"
-                      defaultValue="ghp_************************"
+                      value={githubToken}
+                      onChange={(event) => setGithubToken(event.target.value)}
                       className="h-14 w-full bg-[color:var(--surface-container-highest)] px-4 pr-12 text-white focus:outline-none"
                     />
                     <MonolithIcon
@@ -93,6 +165,17 @@ export default async function EditProjectPage({ params }: EditProjectProps) {
                   <p className="mt-2 text-[11px] italic text-white/45">
                     Scoped permissions for repo and read:org required.
                   </p>
+                </div>
+
+                <div>
+                  <label className="mb-3 block text-[11px] font-bold uppercase tracking-[0.1em] text-[color:var(--on-surface-variant)]">
+                    Instance ID
+                  </label>
+                  <input
+                    value={instanceId}
+                    onChange={(event) => setInstanceId(event.target.value)}
+                    className="h-14 w-full bg-[color:var(--surface-container-highest)] px-4 text-white focus:outline-none"
+                  />
                 </div>
               </div>
             </section>
@@ -105,49 +188,44 @@ export default async function EditProjectPage({ params }: EditProjectProps) {
                 </h3>
               </div>
 
-              <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-                <div className="rounded-lg border border-white bg-white p-6 text-black">
-                  <div className="mb-4 flex items-start justify-between">
-                    <span className="font-bold">t3.medium</span>
-                    <MonolithIcon name="check_circle" className="h-5 w-5" />
-                  </div>
-                  <div className="mb-1 text-xs font-bold uppercase tracking-widest text-black/65">
-                    Compute Capacity
-                  </div>
-                  <div className="text-2xl font-bold">4 vCPU / 8GB RAM</div>
-                  <div className="mt-4 border-t border-black/10 pt-3 text-[10px] uppercase tracking-wider text-black/55">
-                    Default Architecture
-                  </div>
-                </div>
-
-                <div className="rounded-lg border border-white/15 bg-[color:var(--surface-container)] p-6 transition hover:border-white/35">
-                  <div className="mb-4 flex items-start justify-between">
-                    <span className="font-bold text-white">t3.large</span>
-                    <MonolithIcon
-                      name="circle"
-                      className="h-5 w-5 text-[color:var(--on-surface-variant)]"
-                    />
-                  </div>
-                  <div className="mb-1 text-xs font-bold uppercase tracking-widest text-white/65">
-                    Compute Capacity
-                  </div>
-                  <div className="text-2xl font-bold text-white">8 vCPU / 16GB RAM</div>
-                  <div className="mt-4 border-t border-white/10 pt-3 text-[10px] uppercase tracking-wider text-white/45">
-                    Premium Architecture
-                  </div>
-                </div>
-              </div>
+              <label className="mb-3 block text-[11px] font-bold uppercase tracking-[0.1em] text-[color:var(--on-surface-variant)]">
+                Preferred Instance Type
+              </label>
+              <select
+                value={instanceType}
+                onChange={(event) => setInstanceType(event.target.value)}
+                className="h-14 w-full bg-[color:var(--surface-container-highest)] px-4 text-white focus:outline-none"
+              >
+                <option value="t3.medium">t3.medium (4 vCPU / 8GB RAM)</option>
+                <option value="t3.large">t3.large (8 vCPU / 16GB RAM)</option>
+                <option value="g4dn.xlarge">g4dn.xlarge (GPU Acceleration)</option>
+              </select>
+              <p className="mt-2 text-xs text-white/50">
+                Instance type changes apply when provisioning a new project.
+              </p>
             </section>
 
             <div className="flex items-center gap-6 pt-6">
-              <button className="h-12 bg-white px-8 font-bold text-black transition hover:bg-neutral-200">
-                Save Changes
+              <button
+                type="submit"
+                disabled={saving || loading}
+                className="h-12 bg-white px-8 font-bold text-black transition hover:bg-neutral-200 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {saving ? "Saving..." : "Save Changes"}
               </button>
-              <button className="font-medium text-[color:var(--on-surface-variant)] transition hover:text-white">
+              <button
+                type="button"
+                onClick={() => router.push("/")}
+                className="font-medium text-[color:var(--on-surface-variant)] transition hover:text-white"
+              >
                 Cancel
               </button>
             </div>
-          </div>
+
+            {loading ? <p className="text-sm text-white/70">Loading project...</p> : null}
+            {error ? <p className="text-sm text-[color:var(--error)]">{error}</p> : null}
+            {success ? <p className="text-sm text-white/80">{success}</p> : null}
+          </form>
 
           <aside className="lg:col-span-4">
             <div className="sticky top-28 space-y-6">

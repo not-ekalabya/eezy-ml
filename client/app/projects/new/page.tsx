@@ -1,7 +1,40 @@
+"use client";
+
+import { FormEvent, useState } from "react";
+import { useRouter } from "next/navigation";
 import { MonolithShell, sharedSideNav } from "@/app/components/monolith-shell";
 import { MonolithIcon } from "@/app/components/monolith-icon";
+import { autoCreateProjectApi } from "@/lib/api";
 
 export default function CreateProjectPage() {
+  const router = useRouter();
+  const [name, setName] = useState("");
+  const [repoUrl, setRepoUrl] = useState("");
+  const [githubToken, setGithubToken] = useState("");
+  const [instanceType, setInstanceType] = useState("t3.micro");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function onSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setSubmitting(true);
+    setError(null);
+    try {
+      await autoCreateProjectApi({
+        name: name.trim(),
+        repo_url: repoUrl.trim(),
+        github_token: githubToken,
+        instance_type: instanceType,
+      });
+      router.push("/");
+      router.refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to create project");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   return (
     <MonolithShell
       topLinks={[
@@ -25,13 +58,16 @@ export default function CreateProjectPage() {
             </p>
           </div>
 
-          <form className="space-y-10">
+          <form className="space-y-10" onSubmit={onSubmit}>
             <section className="space-y-8">
               <div>
                 <label className="mb-3 block text-[10px] font-bold uppercase tracking-widest text-[color:var(--on-surface-variant)]">
                   Project Name
                 </label>
                 <input
+                  value={name}
+                  onChange={(event) => setName(event.target.value)}
+                  required
                   className="w-full rounded-sm bg-[color:var(--surface-container-highest)] p-4 text-white placeholder:text-neutral-600 focus:outline-none"
                   placeholder="monolith-prod-cluster"
                 />
@@ -47,6 +83,9 @@ export default function CreateProjectPage() {
                     className="absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-neutral-500"
                   />
                   <input
+                    value={repoUrl}
+                    onChange={(event) => setRepoUrl(event.target.value)}
+                    required
                     className="w-full rounded-sm bg-[color:var(--surface-container-highest)] p-4 pl-12 text-white placeholder:text-neutral-600 focus:outline-none"
                     placeholder="https://github.com/org/repo"
                   />
@@ -64,6 +103,8 @@ export default function CreateProjectPage() {
                   />
                   <input
                     type="password"
+                    value={githubToken}
+                    onChange={(event) => setGithubToken(event.target.value)}
                     className="w-full rounded-sm bg-[color:var(--surface-container-highest)] p-4 pl-12 text-white placeholder:text-neutral-600 focus:outline-none"
                     placeholder="ghp_********************"
                   />
@@ -82,13 +123,18 @@ export default function CreateProjectPage() {
               <label className="mb-3 block text-[10px] font-bold uppercase tracking-widest text-[color:var(--on-surface-variant)]">
                 AWS Instance Type
               </label>
-              <select className="w-full cursor-pointer rounded-sm bg-[color:var(--surface-container)] p-4 text-white focus:outline-none">
-                <option>t3.micro (Standard General Purpose)</option>
-                <option>t3.small (Development)</option>
-                <option>m5.large (Balanced)</option>
-                <option>c5.xlarge (Compute Optimized)</option>
-                <option>g4dn.xlarge (GPU Acceleration)</option>
-                <option>r5.2xlarge (Memory Optimized)</option>
+              <select
+                value={instanceType}
+                onChange={(event) => setInstanceType(event.target.value)}
+                className="w-full cursor-pointer rounded-sm bg-[color:var(--surface-container)] p-4 text-white focus:outline-none"
+              >
+                <option value="t3.micro">t3.micro (Standard General Purpose)</option>
+                <option value="t3.small">t3.small (Development)</option>
+                <option value="t3.medium">t3.medium (Balanced)</option>
+                <option value="t3.large">t3.large (High Throughput)</option>
+                <option value="m5.large">m5.large (Balanced CPU)</option>
+                <option value="c5.xlarge">c5.xlarge (Compute Optimized)</option>
+                <option value="g4dn.xlarge">g4dn.xlarge (GPU Acceleration)</option>
               </select>
 
               <div className="mt-6 flex items-start gap-3 rounded-md bg-[color:var(--surface-container-highest)]/35 p-4">
@@ -103,17 +149,23 @@ export default function CreateProjectPage() {
             <div className="flex flex-col items-center justify-between gap-4 border-t border-white/5 pt-8 md:flex-row">
               <button
                 type="button"
+                onClick={() => router.push("/")}
                 className="text-sm font-medium text-[color:var(--on-surface-variant)] transition-colors hover:text-white"
               >
                 Cancel and return to console
               </button>
               <button
                 type="submit"
+                disabled={submitting}
                 className="w-full rounded-sm bg-white px-10 py-4 font-bold text-black transition hover:bg-neutral-200 md:w-auto"
               >
-                Create Resource
+                {submitting ? "Creating..." : "Create Resource"}
               </button>
             </div>
+
+            {error ? (
+              <p className="text-sm text-[color:var(--error)]">{error}</p>
+            ) : null}
           </form>
         </div>
 

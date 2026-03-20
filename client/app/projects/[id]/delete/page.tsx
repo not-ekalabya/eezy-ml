@@ -1,16 +1,34 @@
+"use client";
+
 import Link from "next/link";
+import { useParams, useRouter } from "next/navigation";
+import { useState } from "react";
 import {
   MonolithShell,
   sharedSideNav,
 } from "@/app/components/monolith-shell";
 import { MonolithIcon } from "@/app/components/monolith-icon";
+import { autoDeleteProjectApi } from "@/lib/api";
 
-type DeleteProjectProps = {
-  params: Promise<{ id: string }>;
-};
+export default function DeleteProjectPage() {
+  const router = useRouter();
+  const params = useParams<{ id: string }>();
+  const id = decodeURIComponent(params.id);
+  const [deleting, setDeleting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-export default async function DeleteProjectPage({ params }: DeleteProjectProps) {
-  const { id } = await params;
+  async function onDelete() {
+    setDeleting(true);
+    setError(null);
+    try {
+      await autoDeleteProjectApi(id);
+      router.push("/");
+      router.refresh();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to delete project");
+      setDeleting(false);
+    }
+  }
 
   return (
     <MonolithShell
@@ -121,10 +139,18 @@ export default async function DeleteProjectPage({ params }: DeleteProjectProps) 
               >
                 Cancel
               </Link>
-              <button className="flex-1 rounded-lg bg-white py-3 text-sm font-bold text-black transition hover:bg-neutral-200">
-                Delete
+              <button
+                onClick={onDelete}
+                disabled={deleting}
+                className="flex-1 rounded-lg bg-white py-3 text-sm font-bold text-black transition hover:bg-neutral-200 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {deleting ? "Deleting..." : "Delete"}
               </button>
             </div>
+
+            {error ? (
+              <p className="mt-3 text-center text-sm text-[color:var(--error)]">{error}</p>
+            ) : null}
           </div>
         </div>
       </main>
