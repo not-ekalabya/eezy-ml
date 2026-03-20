@@ -33,12 +33,59 @@ DEFAULT_AUTO_CREATE_INSTANCE_TYPE = "g4dn.xlarge"
 DEFAULT_AUTO_CREATE_STORAGE_GB = 80
 DEFAULT_AUTO_CREATE_MARKET_TYPE = "on-demand"
 ALLOWED_MARKET_TYPES = {"on-demand", "spot"}
+PROJECT_LIST_CACHE_TTL_SECONDS = 10
 
-ec2_client = boto3.client("ec2", region_name="us-east-1")
-ssm_client = boto3.client("ssm", region_name="us-east-1")
-dynamodb = boto3.resource("dynamodb", region_name="us-east-1")
 PROJECTS_TABLE = os.environ.get("PROJECTS_TABLE", "eezy-ml-projects")
-projects_table = dynamodb.Table(PROJECTS_TABLE)
+_project_list_cache = {
+    "expires_at": 0.0,
+    "value": None,
+}
+_ec2_client = None
+_ssm_client = None
+_dynamodb_resource = None
+_projects_table = None
+
+
+class _LazyProxy:
+    def __init__(self, factory):
+        self._factory = factory
+
+    def __getattr__(self, name):
+        return getattr(self._factory(), name)
+
+
+def _get_ec2_client():
+    global _ec2_client
+    if _ec2_client is None:
+        _ec2_client = boto3.client("ec2", region_name="us-east-1")
+    return _ec2_client
+
+
+def _get_ssm_client():
+    global _ssm_client
+    if _ssm_client is None:
+        _ssm_client = boto3.client("ssm", region_name="us-east-1")
+    return _ssm_client
+
+
+def _get_dynamodb_resource():
+    global _dynamodb_resource
+    if _dynamodb_resource is None:
+        _dynamodb_resource = boto3.resource("dynamodb", region_name="us-east-1")
+    return _dynamodb_resource
+
+
+def _get_projects_table():
+    global _projects_table
+    if _projects_table is None:
+        _projects_table = _get_dynamodb_resource().Table(PROJECTS_TABLE)
+    return _projects_table
+
+
+ec2_client = _LazyProxy(_get_ec2_client)
+ssm_client = _LazyProxy(_get_ssm_client)
+dynamodb = _LazyProxy(_get_dynamodb_resource)
+projects_table = _LazyProxy(_get_projects_table)
 
 
 # ---------------------------------------------------------------------------
@@ -125,6 +172,41 @@ def get_github_token():
         )
 
 
+def _invalidate_project_list_cache():
+    _project_list_cache["expires_at"] = 0.0
+    _project_list_cache["value"] = None
+
+
+def _normalize_project_item(item):
+    normalized = dict(item)
+    if "instance_ids" in normalized and not normalized.get("instance_id"):
+        instance_ids = normalized.get("instance_ids") or []
+        normalized["instance_id"] = instance_ids[0] if instance_ids else ""
+    normalized.pop("instance_ids", None)
+    if not normalized.get("instance_id"):
+        normalized["instance_id"] = ""
+    return normalized
+
+
+def _scan_all_projects():
+    items = []
+    scan_kwargs = {
+        "ProjectionExpression": "#n, repo_url, github_token, instance_id, instance_ids",
+        "ExpressionAttributeNames": {"#n": "name"},
+    }
+
+    while True:
+        resp = projects_table.scan(**scan_kwargs)
+        items.extend(_normalize_project_item(item) for item in resp.get("Items", []))
+        last_key = resp.get("LastEvaluatedKey")
+        if not last_key:
+            break
+        scan_kwargs["ExclusiveStartKey"] = last_key
+
+    items.sort(key=lambda item: item.get("name", ""))
+    return {"projects": items}
+
+
 # ---------------------------------------------------------------------------
 # DynamoDB project store
 # ---------------------------------------------------------------------------
@@ -151,21 +233,20 @@ def create_project(name, repo_url, github_token, instance_id=None):
             raise ValueError(f"Project '{name}' already exists")
         raise
 
+    _invalidate_project_list_cache()
     return {"message": "created", "project": item}
 
 
 def list_projects():
-    resp = projects_table.scan()
-    items = []
-    for item in resp.get("Items", []):
-        # normalize legacy records
-        if "instance_ids" in item and not item.get("instance_id"):
-            item["instance_id"] = item["instance_ids"][0] if item["instance_ids"] else ""
-        item.pop("instance_ids", None)
-        if not item.get("instance_id"):
-            item["instance_id"] = ""
-        items.append(item)
-    return {"projects": items}
+    now = time.monotonic()
+    cached_value = _project_list_cache.get("value")
+    if cached_value is not None and now < _project_list_cache["expires_at"]:
+        return {"projects": [dict(item) for item in cached_value["projects"]]}
+
+    result = _scan_all_projects()
+    _project_list_cache["value"] = result
+    _project_list_cache["expires_at"] = now + PROJECT_LIST_CACHE_TTL_SECONDS
+    return {"projects": [dict(item) for item in result["projects"]]}
 
 
 def delete_project(name):
@@ -181,6 +262,7 @@ def delete_project(name):
         if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
             raise ValueError(f"Project '{name}' does not exist")
         raise
+    _invalidate_project_list_cache()
     return {"message": "deleted", "name": name}
 
 
@@ -255,6 +337,7 @@ def modify_project(name, repo_url=None, github_token=None, instance_id=None):
             raise ValueError(f"Project '{name}' does not exist")
         raise
 
+    _invalidate_project_list_cache()
     return {"message": "updated", "project": resp.get("Attributes", {})}
 
 

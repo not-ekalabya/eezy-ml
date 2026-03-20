@@ -7,6 +7,7 @@ removed.
 
 import json
 import re
+import time
 
 from utils import (
     create_project,
@@ -67,7 +68,11 @@ def handler(event, context):
         )
 
     if path == "/project-manager/list" and method == "GET":
-        return _safe(list_projects)
+        start = time.perf_counter()
+        response = _safe(list_projects)
+        duration_ms = int((time.perf_counter() - start) * 1000)
+        response["headers"]["X-Handler-Time-Ms"] = str(duration_ms)
+        return response
 
     if path == "/project-manager/delete" and method == "POST":
         body = _parse_body(event)
