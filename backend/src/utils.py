@@ -1387,6 +1387,97 @@ def terminate_instance(instance_id):
     }
 
 
+def _proxy_predict_via_ssm(instance_id, payload):
+    """Call local http://127.0.0.1:5000/predict via SSM as a network fallback."""
+    try:
+        ssm_info = ssm_client.describe_instance_information(
+            Filters=[{"Key": "InstanceIds", "Values": [instance_id]}]
+        )
+        info_list = ssm_info.get("InstanceInformationList", [])
+        if not info_list:
+            raise RuntimeError(
+                f"Instance '{instance_id}' is not registered in SSM"
+            )
+        if info_list[0].get("PingStatus") != "Online":
+            raise RuntimeError(
+                f"Instance '{instance_id}' SSM PingStatus is '{info_list[0].get('PingStatus')}'"
+            )
+    except ClientError as e:
+        raise RuntimeError(f"Failed to check SSM status: {e}")
+
+    payload_b64 = base64.b64encode(json.dumps(payload).encode("utf-8")).decode("ascii")
+    commands = [
+        "set -e",
+        "PAYLOAD_FILE=/tmp/eezy-ml-predict-payload.json",
+        "ERR_FILE=/tmp/eezy-ml-predict.err",
+        "SERVE_LOG=/tmp/eezy-ml-serve.log",
+        "python3 - <<'PY'",
+        "import base64, json",
+        f"payload = json.loads(base64.b64decode('{payload_b64}').decode('utf-8'))",
+        "with open('/tmp/eezy-ml-predict-payload.json', 'w', encoding='utf-8') as f:",
+        "    json.dump(payload, f)",
+        "PY",
+        "predict_once() {",
+        "  curl -fsS --max-time 30 -H 'Content-Type: application/json' --data-binary @\"$PAYLOAD_FILE\" http://127.0.0.1:5000/predict",
+        "}",
+        "if RESP=$(predict_once 2>\"$ERR_FILE\"); then",
+        "  printf '%s' \"$RESP\"",
+        "  exit 0",
+        "fi",
+        "if command -v docker >/dev/null 2>&1; then",
+        "  if docker ps -a --format '{{.Names}}' | grep -qx eezy-ml; then",
+        "    docker start eezy-ml >/dev/null 2>&1 || docker restart eezy-ml >/dev/null 2>&1 || true",
+        "  fi",
+        "fi",
+        "SERVE_SCRIPT=$(find /opt/eezy-ml-projects /app -maxdepth 6 -type f -path '*/scripts/serve.sh' 2>/dev/null | head -n 1)",
+        "if [ -n \"$SERVE_SCRIPT\" ]; then",
+        "  nohup bash \"$SERVE_SCRIPT\" >\"$SERVE_LOG\" 2>&1 </dev/null &",
+        "fi",
+        "for i in $(seq 1 20); do",
+        "  if RESP=$(predict_once 2>\"$ERR_FILE\"); then",
+        "    printf '%s' \"$RESP\"",
+        "    exit 0",
+        "  fi",
+        "  sleep 2",
+        "done",
+        "echo 'Local prediction failed after recovery attempts.' >&2",
+        "if [ -s \"$ERR_FILE\" ]; then cat \"$ERR_FILE\" >&2; fi",
+        "if [ -f \"$SERVE_LOG\" ]; then tail -n 60 \"$SERVE_LOG\" >&2 || true; fi",
+        "exit 124",
+    ]
+
+    try:
+        send_resp = ssm_client.send_command(
+            InstanceIds=[instance_id],
+            DocumentName="AWS-RunShellScript",
+            Parameters={"commands": commands},
+        )
+    except ClientError as e:
+        raise RuntimeError(f"Failed to invoke local prediction via SSM: {e}")
+
+    command_id = send_resp["Command"]["CommandId"]
+    invocation = wait_for_command(command_id, instance_id, max_wait_seconds=120, delay_seconds=2)
+    status = invocation.get("Status", "InProgress")
+    stdout = invocation.get("StandardOutputContent", "")
+    stderr = invocation.get("StandardErrorContent", "")
+
+    if status != "Success":
+        raise RuntimeError(
+            "Prediction failed via SSM localhost fallback "
+            f"(status={status}): {stderr or stdout or 'no output'}"
+        )
+
+    raw = stdout.strip()
+    if not raw:
+        raise RuntimeError("Prediction via SSM localhost fallback returned empty output")
+
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        # Return non-JSON output as text to keep API resilient.
+        return {"prediction": raw}
+
+
 def proxy_predict(instance_id, payload):
     """Forward a prediction request to the Flask server on the EC2 instance."""
     instance = get_instance_info(instance_id)
@@ -1414,7 +1505,8 @@ def proxy_predict(instance_id, payload):
         error_body = e.read().decode()
         raise RuntimeError(f"Prediction failed ({e.code}): {error_body}")
     except urllib.error.URLError as e:
-        raise RuntimeError(f"Cannot reach instance: {e.reason}")
+        # Fallback: when public networking is blocked, call localhost via SSM.
+        return _proxy_predict_via_ssm(instance_id, payload)
 
 
 def get_project_status(project_name):
@@ -1442,12 +1534,64 @@ def get_project_status(project_name):
     }
 
 
-def predict_project(project_name, features):
+def _is_non_empty_string(value):
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _is_primitive_feature(value):
+    return value is None or isinstance(value, (str, int, float, bool))
+
+
+def _is_valid_chat_message(value):
+    return (
+        isinstance(value, dict)
+        and _is_non_empty_string(value.get("role"))
+        and _is_non_empty_string(value.get("content"))
+    )
+
+
+def _normalize_features(features):
+    """Accept string, list, or object features and normalize where needed."""
+    if _is_non_empty_string(features):
+        return features
+
+    # Convenience support: single chat message object -> wrap as single-item list.
+    if _is_valid_chat_message(features):
+        return [features]
+
+    if isinstance(features, list):
+        if not features:
+            raise ValueError("features must be a non-empty list when using list input")
+
+        # Single-array mode: list of chat messages or primitive values.
+        if all(_is_valid_chat_message(item) or _is_primitive_feature(item) for item in features):
+            return features
+
+        # Batch mode: list of non-empty lists, each containing chat messages or primitive values.
+        if all(
+            isinstance(row, list)
+            and row
+            and all(_is_valid_chat_message(item) or _is_primitive_feature(item) for item in row)
+            for row in features
+        ):
+            return features
+
+    raise ValueError(
+        "features must be one of: non-empty string, non-empty list, "
+        "or a chat message object with role/content"
+    )
+
+
+def predict_project(project_name, payload):
     """Run one inference call for a project by resolving its instance first."""
     if not project_name:
         raise ValueError("project_name is required")
-    if not isinstance(features, str) or not features.strip():
-        raise ValueError("features is required and must be a non-empty string")
+    if not isinstance(payload, dict):
+        raise ValueError("Request body must be a JSON object")
+
+    normalized_features = _normalize_features(payload.get("features"))
+    normalized_payload = dict(payload)
+    normalized_payload["features"] = normalized_features
 
     project = projects_table.get_item(Key={"name": project_name}).get("Item")
     if not project:
@@ -1457,7 +1601,7 @@ def predict_project(project_name, features):
     if not instance_id:
         raise ValueError(f"Project '{project_name}' has no associated instance_id")
 
-    result = proxy_predict(instance_id, {"features": features})
+    result = proxy_predict(instance_id, normalized_payload)
     return {
         "project_name": project_name,
         "instance_id": instance_id,

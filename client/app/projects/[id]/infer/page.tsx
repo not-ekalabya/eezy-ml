@@ -21,7 +21,15 @@ type FeatureMode = "string" | "single-array" | "batch-array";
 type RequestSchema = {
   properties?: {
     features?: {
-      oneOf?: Array<{ type?: string; items?: { type?: string; items?: { type?: string } } }>;
+      oneOf?: Array<{
+        type?: string;
+        items?: {
+          type?: string;
+          items?: { type?: string; $ref?: string };
+          $ref?: string;
+        };
+        $ref?: string;
+      }>;
     };
     max_new_tokens?: { default?: number };
     temperature?: { default?: number };
@@ -84,12 +92,15 @@ function inferFeatureModes(schema: RequestSchema): FeatureMode[] {
       continue;
     }
 
-    if (variant.type === "array" && variant.items?.type === "array") {
-      modes.push("batch-array");
-      continue;
-    }
+    // Handle array types with nested items
+    if (variant.type === "array" && variant.items) {
+      // Check if items is itself an array (batch mode: array of arrays)
+      if (variant.items.type === "array") {
+        modes.push("batch-array");
+        continue;
+      }
 
-    if (variant.type === "array") {
+      // Otherwise, items are objects or primitives directly (single-array mode)
       modes.push("single-array");
     }
   }
@@ -100,6 +111,12 @@ function inferFeatureModes(schema: RequestSchema): FeatureMode[] {
 function isPrimitive(value: unknown): value is Primitive {
   const t = typeof value;
   return value === null || t === "string" || t === "number" || t === "boolean";
+}
+
+function isValidFeatureValue(value: unknown): boolean {
+  if (isPrimitive(value)) return true;
+  if (typeof value === "object" && value !== null && !Array.isArray(value)) return true;
+  return false;
 }
 
 function parseFeatures(mode: FeatureMode, prompt: string, arrayInput: string): string | Primitive[] | Primitive[][] {
@@ -123,17 +140,20 @@ function parseFeatures(mode: FeatureMode, prompt: string, arrayInput: string): s
   }
 
   if (mode === "single-array") {
-    if (!parsed.every(isPrimitive)) {
-      throw new Error("Each item in features must be a primitive value (string, number, boolean, or null)");
+    if (!parsed.every(isValidFeatureValue)) {
+      throw new Error("Each item in features must be a primitive value or an object");
     }
-    return parsed;
+    return parsed as Primitive[];
   }
 
-  if (!parsed.every((row) => Array.isArray(row) && row.length > 0 && row.every(isPrimitive))) {
-    throw new Error("Batch features must be a non-empty array of non-empty primitive arrays");
+  if (mode === "batch-array") {
+    if (!parsed.every((row) => Array.isArray(row) && row.length > 0 && row.every(isValidFeatureValue))) {
+      throw new Error("Batch features must be a non-empty array of non-empty arrays with valid feature values");
+    }
+    return parsed as Primitive[][];
   }
 
-  return parsed as Primitive[][];
+  return parsed as string | Primitive[] | Primitive[][];
 }
 
 async function fetchSchemaFromRepoRoot(payload: {
@@ -196,7 +216,7 @@ export default function InferPage() {
     "Tell me one short fact about model deployment. Answer with one short sentence.",
   );
   const [featureMode, setFeatureMode] = useState<FeatureMode>("string");
-  const [arrayFeaturesInput, setArrayFeaturesInput] = useState('["Return", "only", "the", "word", "alpha."]');
+  const [arrayFeaturesInput, setArrayFeaturesInput] = useState('[{"role":"user","content":"Answer with one short sentence about deployment."}]');
   const [requestSchema, setRequestSchema] = useState<RequestSchema>(FALLBACK_SCHEMA);
   const [schemaSource, setSchemaSource] = useState("fallback schema");
   const [schemaError, setSchemaError] = useState<string | null>(null);
@@ -204,7 +224,7 @@ export default function InferPage() {
   const [temperature, setTemperature] = useState(0.7);
   const [topP, setTopP] = useState(0.9);
   const [enableThinking, setEnableThinking] = useState(true);
-  const [timeout, setTimeout] = useState(30);
+  const [timeout, setTimeout] = useState(120);
   const [status, setStatus] = useState<ProjectStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [querying, setQuerying] = useState(false);
@@ -363,10 +383,6 @@ export default function InferPage() {
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!isServiceReady) {
-      setError(queryUnavailableReason || "Inference service is not ready");
-      return;
-    }
 
     setQuerying(true);
     setError(null);
@@ -453,7 +469,7 @@ export default function InferPage() {
     );
   }
 
-  const isServiceReady = status.service_status === "ready";
+  const normalizedState = status.state.toLowerCase();
   const shortServiceStatus = status.service_status === "ready"
     ? "Ready"
     : status.service_status === "starting"
@@ -465,17 +481,6 @@ export default function InferPage() {
           : status.service_status === "stopping"
             ? "Stopping"
             : status.service_status;
-  const queryUnavailableReason = !isServiceReady
-    ? status.state === "stopped"
-      ? "Instance is stopped. Start the project from the Projects page before querying."
-      : status.state === "stopping"
-        ? "Instance is stopping. Wait until it is running and service status is Ready."
-        : status.state === "pending"
-          ? "Instance is still launching. Wait for service status to become Ready."
-          : !status.public_ip
-            ? "Instance has no public IP yet. Wait for networking and service initialization to complete."
-            : "Inference service is not ready yet. Wait for service status to become Ready."
-    : "";
   const parsedPrediction = parsePredictionText(result?.prediction);
   const parsedPredictions = Array.isArray(result?.predictions)
     ? result.predictions.map((item) => String(item)).join("\n")
@@ -523,18 +528,12 @@ export default function InferPage() {
               <p className="text-[11px] uppercase tracking-[0.08em] text-[color:var(--on-surface-variant)]">Service Status</p>
               <div className="mt-1 flex items-center gap-2">
                 <div
-                  className={`h-2 w-2 rounded-full ${isServiceReady ? "animate-pulse bg-white" : "bg-[color:var(--outline-variant)]"}`}
+                  className={`h-2 w-2 rounded-full ${status.service_status === "ready" ? "animate-pulse bg-white" : "bg-[color:var(--outline-variant)]"}`}
                 />
                 <p className="text-sm font-medium text-white capitalize">{shortServiceStatus}</p>
               </div>
             </div>
           </div>
-          {!isServiceReady ? (
-            <div className="mt-4 rounded-sm border border-[color:var(--error)]/35 bg-[color:var(--error)]/10 px-3 py-2">
-              <p className="text-[10px] font-bold uppercase tracking-[0.1em] text-[color:var(--error)]">Warning</p>
-              <p className="mt-1 text-xs text-[color:var(--error)]/90">{queryUnavailableReason}</p>
-            </div>
-          ) : null}
         </div>
 
         {/* Query Form */}
@@ -549,7 +548,7 @@ export default function InferPage() {
               <select
                 value={featureMode}
                 onChange={(event) => setFeatureMode(event.target.value as FeatureMode)}
-                disabled={querying || !isServiceReady}
+                disabled={querying}
                 className="w-full rounded-sm border-b border-b-transparent bg-[color:var(--surface-container-highest)] p-4 text-white transition focus:border-b-white focus:outline-none disabled:opacity-60"
               >
                 {featureModes.includes("string") ? (
@@ -572,7 +571,7 @@ export default function InferPage() {
                 <textarea
                   value={prompt}
                   onChange={(e) => setPrompt(e.target.value)}
-                  disabled={querying || !isServiceReady}
+                  disabled={querying}
                   rows={4}
                   className="w-full rounded-sm border-b border-b-transparent bg-[color:var(--surface-container-highest)] p-4 text-white placeholder:text-neutral-600 transition focus:border-b-white focus:outline-none disabled:opacity-60"
                   placeholder="Enter your prompt..."
@@ -581,10 +580,14 @@ export default function InferPage() {
                 <textarea
                   value={arrayFeaturesInput}
                   onChange={(e) => setArrayFeaturesInput(e.target.value)}
-                  disabled={querying || !isServiceReady}
+                  disabled={querying}
                   rows={6}
                   className="w-full rounded-sm border-b border-b-transparent bg-[color:var(--surface-container-highest)] p-4 font-mono text-sm text-white placeholder:text-neutral-600 transition focus:border-b-white focus:outline-none disabled:opacity-60"
-                  placeholder={featureMode === "single-array" ? '["Return", "only", "the", "word", "alpha."]' : '[["Return the word one."], ["Return the word two."]]'}
+                  placeholder={
+                    featureMode === "single-array"
+                      ? '[{"role":"user","content":"Answer with one short sentence about deployment."}]'
+                      : '[[{"role":"user","content":"Return the word one."}],[{"role":"user","content":"Return the word two."}]]'
+                  }
                 />
               )}
             </div>
@@ -597,7 +600,7 @@ export default function InferPage() {
                   min="1"
                   value={maxNewTokens}
                   onChange={(e) => setMaxNewTokens(Math.max(1, parseInt(e.target.value, 10) || 96))}
-                  disabled={querying || !isServiceReady}
+                  disabled={querying}
                   className="w-full rounded-sm border-b border-b-transparent bg-[color:var(--surface-container-highest)] p-4 text-white placeholder:text-neutral-600 transition focus:border-b-white focus:outline-none disabled:opacity-60"
                 />
               </div>
@@ -612,7 +615,7 @@ export default function InferPage() {
                   step="0.01"
                   value={temperature}
                   onChange={(e) => setTemperature(Math.max(0, parseFloat(e.target.value) || 0))}
-                  disabled={querying || !isServiceReady}
+                  disabled={querying}
                   className="w-full rounded-sm border-b border-b-transparent bg-[color:var(--surface-container-highest)] p-4 text-white placeholder:text-neutral-600 transition focus:border-b-white focus:outline-none disabled:opacity-60"
                 />
               </div>
@@ -628,7 +631,7 @@ export default function InferPage() {
                   step="0.01"
                   value={topP}
                   onChange={(e) => setTopP(Math.max(0.0001, Math.min(1, parseFloat(e.target.value) || 0.9)))}
-                  disabled={querying || !isServiceReady}
+                  disabled={querying}
                   className="w-full rounded-sm border-b border-b-transparent bg-[color:var(--surface-container-highest)] p-4 text-white placeholder:text-neutral-600 transition focus:border-b-white focus:outline-none disabled:opacity-60"
                 />
               </div>
@@ -640,7 +643,7 @@ export default function InferPage() {
                   type="checkbox"
                   checked={enableThinking}
                   onChange={(event) => setEnableThinking(event.target.checked)}
-                  disabled={querying || !isServiceReady}
+                  disabled={querying}
                   className="h-4 w-4 accent-white"
                 />
                 enable_thinking
@@ -662,7 +665,7 @@ export default function InferPage() {
                 max="600"
                 value={timeout}
                 onChange={(e) => setTimeout(Math.max(1, parseInt(e.target.value) || 30))}
-                disabled={querying || !isServiceReady}
+                disabled={querying}
                 className="w-full rounded-sm border-b border-b-transparent bg-[color:var(--surface-container-highest)] p-4 text-white placeholder:text-neutral-600 transition focus:border-b-white focus:outline-none disabled:opacity-60"
               />
             </div>
@@ -678,7 +681,7 @@ export default function InferPage() {
               </button>
               <button
                 type="submit"
-                disabled={querying || !isServiceReady}
+                disabled={querying}
                 className="rounded-sm bg-[linear-gradient(45deg,#FFFFFF,#D4D4D4)] px-6 py-3 font-bold text-black transition hover:brightness-105 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-60"
               >
                 {querying ? "Querying..." : "Send Query"}

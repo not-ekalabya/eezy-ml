@@ -10,23 +10,13 @@
   ],
   "properties": {
     "features": {
-      "description": "Either a single prompt string, a single prompt represented as a list of primitive values, or a batch represented as a list of prompt lists.",
+      "description": "Either a single chat represented as a list of message objects, or a batch represented as a list of chat message lists.",
       "oneOf": [
-        {
-          "type": "string",
-          "minLength": 1
-        },
         {
           "type": "array",
           "minItems": 1,
           "items": {
-            "type": [
-              "string",
-              "number",
-              "integer",
-              "boolean",
-              "null"
-            ]
+            "$ref": "#/$defs/chatMessage"
           }
         },
         {
@@ -36,13 +26,7 @@
             "type": "array",
             "minItems": 1,
             "items": {
-              "type": [
-                "string",
-                "number",
-                "integer",
-                "boolean",
-                "null"
-              ]
+              "$ref": "#/$defs/chatMessage"
             }
           }
         }
@@ -73,9 +57,34 @@
       "description": "Whether to enable the model's thinking mode when supported."
     }
   },
+  "$defs": {
+    "chatMessage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "role",
+        "content"
+      ],
+      "properties": {
+        "role": {
+          "type": "string",
+          "minLength": 1
+        },
+        "content": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  },
   "examples": [
     {
-      "features": "Answer with one short sentence about deployment.",
+      "features": [
+        {
+          "role": "user",
+          "content": "Answer with one short sentence about deployment."
+        }
+      ],
       "max_new_tokens": 96,
       "temperature": 0.7,
       "top_p": 0.9,
@@ -83,24 +92,23 @@
     },
     {
       "features": [
-        "Return",
-        "only",
-        "the",
-        "word",
-        "alpha."
-      ],
-      "max_new_tokens": 32
-    },
-    {
-      "features": [
         [
-          "Return the word one."
+          {
+            "role": "user",
+            "content": "Return the word one."
+          }
         ],
         [
-          "Return the word two."
+          {
+            "role": "user",
+            "content": "Return the word two."
+          }
         ],
         [
-          "Return the word three."
+          {
+            "role": "user",
+            "content": "Return the word three."
+          }
         ]
       ],
       "temperature": 0.2,

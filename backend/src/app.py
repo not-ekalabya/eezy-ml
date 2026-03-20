@@ -135,7 +135,7 @@ def handler(event, context):
         if body is None:
             return _err(400, "Request body must be valid JSON")
         project_name = m.group(1)
-        return _safe(predict_project, project_name, body.get("features"))
+        return _safe(predict_project, project_name, body)
 
     return _err(404, "Not found")
 
