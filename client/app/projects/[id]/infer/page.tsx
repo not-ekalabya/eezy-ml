@@ -349,8 +349,8 @@ export default function InferPage() {
 
   async function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!status?.public_ip) {
-      setError("Inference URL not available");
+    if (!isServiceReady) {
+      setError(queryUnavailableReason || "Inference service is not ready");
       return;
     }
 
@@ -412,7 +412,7 @@ export default function InferPage() {
     );
   }
 
-  if (!status || !status.public_ip) {
+  if (!status) {
     return (
       <MonolithShell
         topLinks={[
@@ -426,12 +426,7 @@ export default function InferPage() {
       >
         <div className="space-y-4 py-16">
           <div className="rounded-md border border-[color:var(--error)] bg-[color:var(--error)]/10 px-4 py-3">
-            <p className="text-sm text-[color:var(--error)]">
-              {error
-                ? error
-                : "Instance does not have a public IP address yet. "
-                + "Please wait for the instance to fully initialize."}
-            </p>
+            <p className="text-sm text-[color:var(--error)]">{error || "Failed to load project status."}</p>
           </div>
           <button
             onClick={() => router.push("/")}
@@ -445,7 +440,28 @@ export default function InferPage() {
   }
 
   const isServiceReady = status.service_status === "ready";
-  const shortServiceStatus = status.service_status === "ready" ? "Ready" : "Starting";
+  const shortServiceStatus = status.service_status === "ready"
+    ? "Ready"
+    : status.service_status === "starting"
+      ? "Starting"
+      : status.service_status === "launching"
+        ? "Launching"
+        : status.service_status === "stopped"
+          ? "Stopped"
+          : status.service_status === "stopping"
+            ? "Stopping"
+            : status.service_status;
+  const queryUnavailableReason = !isServiceReady
+    ? status.state === "stopped"
+      ? "Instance is stopped. Start the project from the Projects page before querying."
+      : status.state === "stopping"
+        ? "Instance is stopping. Wait until it is running and service status is Ready."
+        : status.state === "pending"
+          ? "Instance is still launching. Wait for service status to become Ready."
+          : !status.public_ip
+            ? "Instance has no public IP yet. Wait for networking and service initialization to complete."
+            : "Inference service is not ready yet. Wait for service status to become Ready."
+    : "";
   const parsedPrediction = parsePredictionText(result?.prediction);
   const parsedPredictions = Array.isArray(result?.predictions)
     ? result.predictions.map((item) => String(item)).join("\n")
@@ -487,7 +503,7 @@ export default function InferPage() {
             </div>
             <div>
               <p className="text-xs text-white/60">Public IP</p>
-              <p className="mt-1 text-sm font-mono text-white/85">{status.public_ip}</p>
+              <p className="mt-1 text-sm font-mono text-white/85">{status.public_ip || "-"}</p>
             </div>
             <div>
               <p className="text-xs text-white/60">Service Status</p>
@@ -499,11 +515,9 @@ export default function InferPage() {
               </div>
             </div>
           </div>
-          {!isServiceReady && (
-            <p className="mt-4 text-xs text-white/60">
-              The inference service is still starting up. Please wait and refresh this page.
-            </p>
-          )}
+          {!isServiceReady ? (
+            <p className="mt-4 text-xs text-white/60">{queryUnavailableReason}</p>
+          ) : null}
         </div>
 
         {/* Query Form */}
