@@ -38,6 +38,7 @@ export default function CreateProjectPage() {
   const [repoUrl, setRepoUrl] = useState("");
   const [githubToken, setGithubToken] = useState("");
   const [instanceType, setInstanceType] = useState("t3.micro");
+  const [isSpotInstance, setIsSpotInstance] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [streamStatus, setStreamStatus] = useState("Idle");
   const [logs, setLogs] = useState("");
@@ -160,6 +161,7 @@ export default function CreateProjectPage() {
         repo_url: repoUrl.trim(),
         github_token: githubToken,
         instance_type: instanceType,
+        isSpotInstance: isSpotInstance,
       });
 
       const createdName = createResponse.project?.name || projectName;
@@ -312,6 +314,18 @@ export default function CreateProjectPage() {
                 <option value="g4dn.xlarge">g4dn.xlarge (GPU Acceleration)</option>
               </select>
 
+              { /* Additional Compute Options */ }
+
+              <label className="block mt-6 text-sm text-[color:var(--on-surface-variant)]">
+                <input
+                  type="checkbox"
+                  onChange={(event) => setIsSpotInstance(event.target.checked)}
+                  disabled={submitting}
+                  className="mr-2 bg-[color:var(--surface-container)] cursor-pointer"
+                />
+                <span>Spot Instance</span>
+              </label>
+
               <div className="mt-6 flex items-start gap-3 rounded-md bg-[color:var(--surface-container-highest)]/35 p-4">
                 <MonolithIcon name="info" className="h-5 w-5 text-neutral-500" />
                 <p className="text-xs leading-normal text-[color:var(--on-surface-variant)]">
@@ -319,6 +333,7 @@ export default function CreateProjectPage() {
                   VPC. Automated health checks will be configured by default.
                 </p>
               </div>
+
             </section>
 
             <div className="flex flex-col items-center justify-between gap-4 border-t border-white/5 pt-8 md:flex-row">

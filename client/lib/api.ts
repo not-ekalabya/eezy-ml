@@ -43,12 +43,18 @@ export async function autoCreateProjectApi(payload: {
   repo_url: string;
   github_token: string;
   instance_type: string;
+  isSpotInstance: boolean;
 }) {
+  const requestPayload = {
+    ...payload,
+    market_type: payload.isSpotInstance ? "spot" : "on-demand",
+  };
+
   return request<{ message: string; project: BackendProject }>(
     "/project-manager/auto_create",
     {
       method: "POST",
-      body: JSON.stringify(payload),
+      body: JSON.stringify(requestPayload),
     },
   );
 }
@@ -58,6 +64,7 @@ export async function modifyProjectApi(payload: {
   repo_url: string;
   github_token: string;
   instance_id: string;
+  isSpotInstance: boolean;
 }) {
   return request<{ message: string; project: BackendProject }>(
     "/project-manager/modify",

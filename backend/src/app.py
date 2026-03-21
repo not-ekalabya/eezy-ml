@@ -55,6 +55,9 @@ def handler(event, context):
         body = _parse_body(event)
         if body is None:
             return _err(400, "Request body must be valid JSON")
+        market_type = body.get("market_type")
+        if market_type is None and body.get("isSpotInstance") is True:
+            market_type = "spot"
         return _safe(
             auto_create_project,
             name=body.get("name"),
@@ -64,7 +67,7 @@ def handler(event, context):
             ami_id=body.get("ami_id"),
             instance_type=body.get("instance_type"),
             storage_gb=body.get("storage_gb"),
-            market_type=body.get("market_type"),
+            market_type=market_type,
         )
 
     if path == "/project-manager/list" and method == "GET":
