@@ -8,8 +8,8 @@ Endpoints:
     POST /predict         Accepts JSON and returns model predictions.
 
 Request body for /predict:
-    Single sample:  {"features": [<784 floats>]}
-    Batch:          {"features": [[<784 floats>], ...]}
+    Message list:   {"features": [{"role": "user", "content": "prompt"}], "max_new_tokens": 96}
+    Batch list:     {"features": [[{"role": "user", "content": "prompt 1"}], [{"role": "user", "content": "prompt 2"}]], "temperature": 0.7}
 """
 
 import os
@@ -22,9 +22,17 @@ from inference import load_model, predict, predict_batch
 app = Flask(__name__)
 
 
+def _is_batch_payload(features):
+    if not isinstance(features, list) or not features:
+        return False
+    if all(isinstance(item, dict) for item in features):
+        return False
+    return any(isinstance(item, list) for item in features)
+
+
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok - auto deployment works <test 2>!"})
+    return jsonify({"status": "ok - real-time logging <test-6>!"})
 
 
 @app.route("/test", methods=["GET"])
@@ -55,13 +63,18 @@ def predict_endpoint():
         return jsonify({"error": "Request body must be JSON with a 'features' field."}), 400
 
     features = body["features"]
+    options = {
+        key: body[key]
+        for key in ("max_new_tokens", "temperature", "top_p", "enable_thinking")
+        if key in body
+    }
 
     try:
-        if features and isinstance(features[0], list):
-            predictions = predict_batch(features)
+        if _is_batch_payload(features):
+            predictions = predict_batch(features, options=options)
             return jsonify({"predictions": predictions})
         else:
-            prediction = predict(features)
+            prediction = predict(features, options=options)
             return jsonify({"prediction": prediction})
     except (ValueError, FileNotFoundError) as exc:
         return jsonify({"error": str(exc)}), 422
@@ -76,4 +89,3 @@ if __name__ == "__main__":
     host = os.environ.get("SERVER_HOST", "0.0.0.0")
     port = int(os.environ.get("SERVER_PORT", 5000))
     app.run(host=host, port=port, threaded=True)
-    
