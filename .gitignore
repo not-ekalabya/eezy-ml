@@ -15,7 +15,7 @@ examples/scikit_learn_mnist/.venv/
 # backend
 backend/.aws-sam/
 backend/env.json
-backend/start-dev.ps1
+backend/start-dev.*
 backend/.env
 
 # pycache
