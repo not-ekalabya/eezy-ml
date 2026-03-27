@@ -81,10 +81,17 @@ def predict_endpoint():
 
 
 if __name__ == "__main__":
-    try:
-        load_model()
-    except FileNotFoundError:
-        pass
+    # Keep startup fast for deployment health checks; preload is optional.
+    preload = os.environ.get("PRELOAD_MODEL_ON_START", "0").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    if preload:
+        try:
+            load_model()
+        except FileNotFoundError:
+            pass
 
     host = os.environ.get("SERVER_HOST", "0.0.0.0")
     port = int(os.environ.get("SERVER_PORT", 5000))

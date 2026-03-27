@@ -6,7 +6,8 @@ cd "$SCRIPT_DIR/.."
 
 wait_for_health() {
     local server_pid="$1"
-    local timeout_seconds="${HEALTH_CHECK_TIMEOUT_SECONDS:-60}"
+    local timeout_seconds="${HEALTH_CHECK_TIMEOUT_SECONDS:-180}"
+    local server_port="${SERVER_PORT:-5000}"
     local interval_seconds=2
     local max_attempts=$((timeout_seconds / interval_seconds))
 
@@ -17,9 +18,9 @@ wait_for_health() {
     echo "=== Waiting for server health (timeout: ${timeout_seconds}s) ==="
     local attempt=1
     while [ "$attempt" -le "$max_attempts" ]; do
-        if curl -fsS http://127.0.0.1:5000/health > /dev/null; then
+        if curl -fsS "http://127.0.0.1:${server_port}/health" > /dev/null; then
             echo "=== Querying /health ==="
-            curl -fsS http://127.0.0.1:5000/health
+            curl -fsS "http://127.0.0.1:${server_port}/health"
             echo ""
             return 0
         fi
@@ -134,7 +135,7 @@ SERVER_PID=$!
 wait_for_health "$SERVER_PID"
 
 echo "=== Querying /test ==="
-curl -s http://localhost:5000/test
+curl -s "http://localhost:${SERVER_PORT:-5000}/test"
 echo ""
 
 echo "=== Server is running (PID: $SERVER_PID) ==="
