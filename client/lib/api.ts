@@ -63,10 +63,8 @@ export async function autoCreateProjectApi(payload: {
 export async function modifyProjectApi(payload: {
   name: string;
   repo_url: string;
-  sub_folder: string;
   github_token: string;
   instance_id: string;
-  isSpotInstance: boolean;
 }) {
   return request<{ message: string; project: BackendProject }>(
     "/project-manager/modify",

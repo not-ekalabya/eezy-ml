@@ -482,7 +482,6 @@ export default function InferPage() {
     );
   }
 
-  const normalizedState = status.state.toLowerCase();
   const shortServiceStatus = status.service_status === "ready"
     ? "Ready"
     : status.service_status === "starting"

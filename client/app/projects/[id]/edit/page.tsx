@@ -19,7 +19,6 @@ export default function EditProjectPage() {
   const [repoUrl, setRepoUrl] = useState("");
   const [githubToken, setGithubToken] = useState("");
   const [instanceId, setInstanceId] = useState("");
-  const [instanceType, setInstanceType] = useState("g4dn.xlarge");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -178,31 +177,6 @@ export default function EditProjectPage() {
                   />
                 </div>
               </div>
-            </section>
-
-            <section>
-              <div className="mb-8 flex items-center gap-3">
-                <MonolithIcon name="memory" className="h-5 w-5 text-white" />
-                <h3 className="text-xl font-semibold tracking-tight text-white">
-                  Compute Profile
-                </h3>
-              </div>
-
-              <label className="mb-3 block text-[11px] font-bold uppercase tracking-[0.1em] text-[color:var(--on-surface-variant)]">
-                Preferred Instance Type
-              </label>
-              <select
-                value={instanceType}
-                onChange={(event) => setInstanceType(event.target.value)}
-                className="h-14 w-full bg-[color:var(--surface-container-highest)] px-4 text-white focus:outline-none"
-              >
-                <option value="t3.medium">t3.medium (4 vCPU / 8GB RAM)</option>
-                <option value="t3.large">t3.large (8 vCPU / 16GB RAM)</option>
-                <option value="g4dn.xlarge">g4dn.xlarge (GPU Acceleration)</option>
-              </select>
-              <p className="mt-2 text-xs text-white/50">
-                Instance type changes apply when provisioning a new project.
-              </p>
             </section>
 
             <div className="flex items-center gap-6 pt-6">

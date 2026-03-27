@@ -40,13 +40,6 @@ _project_list_cache = {
     "expires_at": 0.0,
     "value": None,
 }
-_ec2_client = None
-_ssm_client = None
-_dynamodb_resource = None
-_projects_table = None
-
-
-import boto3
 
 # Clients
 ec2_client = boto3.client("ec2", region_name="us-east-1")
@@ -122,27 +115,6 @@ def validate_project_payload(name, repo_url, github_token, instance_id, require_
     validate_instance_id(instance_id)
 
 
-# ---------------------------------------------------------------------------
-# GitHub token
-# ---------------------------------------------------------------------------
-
-def get_github_token():
-    """Retrieve GitHub token from env var or SSM Parameter Store."""
-    token = os.environ.get("GH_PAT") or os.environ.get("GITHUB_TOKEN")
-    if token:
-        return token
-
-    ssm_name = os.environ.get("SSM_GITHUB_TOKEN_NAME", "/eezy-ml/github-token")
-    try:
-        resp = ssm_client.get_parameter(Name=ssm_name, WithDecryption=True)
-        return resp["Parameter"]["Value"]
-    except Exception as e:
-        raise RuntimeError(
-            "GitHub token not found. Set GITHUB_TOKEN env var or "
-            f"create SSM parameter {ssm_name}: {e}"
-        )
-
-
 def _invalidate_project_list_cache():
     _project_list_cache["expires_at"] = 0.0
     _project_list_cache["value"] = None
@@ -150,10 +122,6 @@ def _invalidate_project_list_cache():
 
 def _normalize_project_item(item):
     normalized = dict(item)
-    if "instance_ids" in normalized and not normalized.get("instance_id"):
-        instance_ids = normalized.get("instance_ids") or []
-        normalized["instance_id"] = instance_ids[0] if instance_ids else ""
-    normalized.pop("instance_ids", None)
     if not normalized.get("instance_id"):
         normalized["instance_id"] = ""
     return normalized
@@ -162,7 +130,7 @@ def _normalize_project_item(item):
 def _scan_all_projects():
     items = []
     scan_kwargs = {
-        "ProjectionExpression": "#n, repo_url, github_token, instance_id, instance_ids",
+        "ProjectionExpression": "#n, repo_url, github_token, instance_id, sub_folder",
         "ExpressionAttributeNames": {"#n": "name"},
     }
 
@@ -192,7 +160,6 @@ def create_project(name, repo_url, github_token, instance_id=None, sub_folder=".
         "github_token": github_token or "",
         "instance_id": instance_id or "",
         "sub_folder": sub_folder or ".",
-        # keep schema single-instance; legacy instance_ids removed
     }
 
     try:
@@ -288,7 +255,6 @@ def modify_project(name, repo_url=None, github_token=None, instance_id=None, sub
     update_expr = []
     expr_values = {}
     expr_names = {"#n": "name"}
-    remove_expr = ["instance_ids"]
 
     if repo_url is not None:
         update_expr.append("repo_url = :r")
@@ -307,8 +273,6 @@ def modify_project(name, repo_url=None, github_token=None, instance_id=None, sub
         raise ValueError("Nothing to update")
 
     update_statement = "SET " + ", ".join(update_expr)
-    if remove_expr:
-        update_statement = "REMOVE " + ", ".join(remove_expr) + " " + update_statement
 
     try:
         resp = projects_table.update_item(
@@ -1389,100 +1353,6 @@ def get_or_create_security_group():
         ],
     )
     return sg_id
-
-
-def get_latest_ami():
-    """Get the latest Amazon Linux 2023 x86_64 AMI ID."""
-    resp = ssm_client.get_parameter(
-        Name="/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
-    )
-    return resp["Parameter"]["Value"]
-
-
-# ---------------------------------------------------------------------------
-# EC2 lifecycle
-# ---------------------------------------------------------------------------
-
-def _build_user_data(repo_url, github_token):
-    """Build a cloud-init script that clones, builds and runs the container."""
-    # Authenticated clone URL (token stripped from remote afterwards)
-    auth_url = repo_url.replace("https://", f"https://{github_token}@")
-    if not auth_url.endswith(".git"):
-        auth_url += ".git"
-    clean_url = repo_url if repo_url.endswith(".git") else repo_url + ".git"
-
-    script = f"""#!/bin/bash
-set -ex
-exec > >(tee /var/log/user-data.log) 2>&1
-
-echo "=== eezy-ml: bootstrapping ==="
-
-# Install Docker & Git
-dnf update -y
-dnf install -y docker git
-
-systemctl start docker
-systemctl enable docker
-
-# Clone private repo
-git clone {auth_url} /app
-cd /app
-git remote set-url origin {clean_url}
-
-# Build & run
-docker build -t eezy-ml-model .
-docker run -d -p 5000:5000 --restart unless-stopped --name eezy-ml eezy-ml-model
-
-echo "=== eezy-ml: deployment complete ==="
-"""
-    return base64.b64encode(script.encode()).decode()
-
-
-def deploy_instance(repo_url, instance_type="t3.medium"):
-    """Launch an EC2 instance and deploy the ML container from *repo_url*."""
-    validate_repo_url(repo_url)
-    validate_instance_type(instance_type)
-
-    github_token = get_github_token()
-    sg_id = get_or_create_security_group()
-    ami_id = get_latest_ami()
-    user_data = _build_user_data(repo_url, github_token)
-
-    resp = ec2_client.run_instances(
-        ImageId=ami_id,
-        InstanceType=instance_type,
-        MinCount=1,
-        MaxCount=1,
-        SecurityGroupIds=[sg_id],
-        UserData=user_data,
-        BlockDeviceMappings=[
-            {
-                "DeviceName": "/dev/xvda",
-                "Ebs": {
-                    "VolumeSize": 30,
-                    "VolumeType": "gp3",
-                    "DeleteOnTermination": True,
-                },
-            }
-        ],
-        TagSpecifications=[
-            {
-                "ResourceType": "instance",
-                "Tags": [
-                    {"Key": "Name", "Value": f"eezy-ml-{repo_url.rstrip('/').split('/')[-1]}"},
-                    {"Key": "Project", "Value": INSTANCE_TAG},
-                    {"Key": "RepoUrl", "Value": repo_url},
-                ],
-            }
-        ],
-    )
-
-    instance_id = resp["Instances"][0]["InstanceId"]
-    return {
-        "instance_id": instance_id,
-        "status": "launching",
-        "message": f"Instance is launching. Poll GET /status/{instance_id} until service_status is 'ready'.",
-    }
 
 
 def get_instance_info(instance_id):

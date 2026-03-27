@@ -1,8 +1,7 @@
 ﻿"""app.py - Lambda handler for eezy-ml backend API.
 
-This version exposes project management endpoints backed by DynamoDB.
-Only the project-manager routes are enabled; EC2 inference endpoints were
-removed.
+Exposes project-management and project lifecycle endpoints backed by DynamoDB,
+EC2, and SSM.
 """
 
 import json
@@ -58,8 +57,6 @@ def handler(event, context):
     if path == "/project-manager/auto_create" and method == "POST":
         body = _parse_body(event)
 
-        print(f"Received auto_create request: {body}")  # Debug log
-
         if body is None:
             return _err(400, "Request body must be valid JSON")
         market_type = body.get("market_type")
@@ -103,8 +100,6 @@ def handler(event, context):
 
         if body is None:
             return _err(400, "Request body must be valid JSON")
-        
-        print(f"Received modify request: {body}")  # Debug log
 
         return _safe(
             modify_project,
