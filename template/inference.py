@@ -11,7 +11,7 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 MODELS_DIR = os.path.join(os.path.dirname(__file__), "model")
-MODEL_CACHE_DIR = os.path.join(MODELS_DIR, "qwen3-4b")
+MODEL_CACHE_DIR = os.path.join(MODELS_DIR, "qwen3-8b")
 MODEL_READY_PATH = os.path.join(MODELS_DIR, "model.ready")
 THINK_END_TOKEN_ID = 151668
 
@@ -92,10 +92,10 @@ def load_model() -> Tuple[Any, Any]:
     """Load and cache tokenizer/model from disk. Raises FileNotFoundError if missing."""
     global _model, _tokenizer
     if _model is None or _tokenizer is None:
-        if not (os.path.exists(MODEL_READY_PATH) and os.path.isdir(MODEL_CACHE_DIR)):
-            raise FileNotFoundError(
-                f"Model not found at '{MODEL_CACHE_DIR}'. Run init.py first."
-            )
+        # if not (os.path.exists(MODEL_READY_PATH) and os.path.isdir(MODEL_CACHE_DIR)):
+        #     raise FileNotFoundError(
+        #         f"Model not found at '{MODEL_CACHE_DIR}'. Run init.py first."
+        #     )
 
         _tokenizer = AutoTokenizer.from_pretrained(MODEL_CACHE_DIR)
         _model = AutoModelForCausalLM.from_pretrained(

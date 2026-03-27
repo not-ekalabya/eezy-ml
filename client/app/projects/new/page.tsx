@@ -33,18 +33,27 @@ function isSetupRetryable(message: string) {
 }
 
 export default function CreateProjectPage() {
+  
   const router = useRouter();
+
+  // form states
+
   const [name, setName] = useState("");
   const [repoUrl, setRepoUrl] = useState("");
   const [githubToken, setGithubToken] = useState("");
+  const [subFolder, setSubFolder] = useState(".");
   const [instanceType, setInstanceType] = useState("t3.micro");
   const [isSpotInstance, setIsSpotInstance] = useState(false);
+
+  // submission and streaming states
+
   const [submitting, setSubmitting] = useState(false);
   const [streamStatus, setStreamStatus] = useState("Idle");
   const [logs, setLogs] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [createdProjectName, setCreatedProjectName] = useState<string | null>(null);
+
   const logsRef = useRef<HTMLPreElement | null>(null);
 
   useEffect(() => {
@@ -162,6 +171,7 @@ export default function CreateProjectPage() {
         github_token: githubToken,
         instance_type: instanceType,
         isSpotInstance: isSpotInstance,
+        sub_folder: subFolder.trim(),
       });
 
       const createdName = createResponse.project?.name || projectName;
@@ -269,6 +279,27 @@ export default function CreateProjectPage() {
 
               <div>
                 <label className="mb-3 block text-[10px] font-bold uppercase tracking-widest text-[color:var(--on-surface-variant)]">
+                  (Optional) Target Directory 
+                </label>
+                <div className="relative">
+                  <MonolithIcon
+                    name="folder"
+                    className="absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-neutral-500"
+                  />
+                  <input
+                    type="text"
+                    value={subFolder}
+                    onChange={(event) => setSubFolder(event.target.value)}
+                    disabled={submitting}
+                    className="w-full rounded-sm bg-[color:var(--surface-container-highest)] p-4 pl-12 text-white placeholder:text-neutral-600 focus:outline-none disabled:opacity-60"
+                    placeholder="."
+                    defaultValue="."
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="mb-3 block text-[10px] font-bold uppercase tracking-widest text-[color:var(--on-surface-variant)]">
                   GitHub Access Token
                 </label>
                 <div className="relative">
@@ -286,7 +317,9 @@ export default function CreateProjectPage() {
                   />
                 </div>
               </div>
+
             </section>
+
 
             <section className="rounded-lg border border-white/10 bg-[color:var(--surface-container-low)] p-6 md:p-8">
               <div className="mb-8 flex items-center gap-3">

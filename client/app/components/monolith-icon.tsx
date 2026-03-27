@@ -26,6 +26,7 @@ import {
   Terminal,
   Trash2,
   Search,
+  Folder,
   type LucideIcon,
 } from "lucide-react";
 
@@ -60,6 +61,7 @@ const ICON_MAP: Record<string, LucideIcon> = {
   circle: Circle,
   language: Globe,
   search: Search,
+  folder: Folder,
 };
 
 type MonolithIconProps = {

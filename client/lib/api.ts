@@ -41,6 +41,7 @@ export async function listProjectsApi() {
 export async function autoCreateProjectApi(payload: {
   name: string;
   repo_url: string;
+  sub_folder: string;
   github_token: string;
   instance_type: string;
   isSpotInstance: boolean;
@@ -62,6 +63,7 @@ export async function autoCreateProjectApi(payload: {
 export async function modifyProjectApi(payload: {
   name: string;
   repo_url: string;
+  sub_folder: string;
   github_token: string;
   instance_id: string;
   isSpotInstance: boolean;

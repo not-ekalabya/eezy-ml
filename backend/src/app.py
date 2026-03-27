@@ -35,6 +35,7 @@ _PATH_PREDICT = re.compile(r"^/projects/([^/]+)/predict/?$")
 
 
 def handler(event, context):
+
     path = event.get("path", "")
     method = event.get("httpMethod", "GET")
 
@@ -49,10 +50,14 @@ def handler(event, context):
             repo_url=body.get("repo_url"),
             github_token=body.get("github_token"),
             instance_id=body.get("instance_id"),
+            sub_folder=body.get("sub_folder"),
         )
 
     if path == "/project-manager/auto_create" and method == "POST":
         body = _parse_body(event)
+
+        print(f"Received auto_create request: {body}")  # Debug log
+
         if body is None:
             return _err(400, "Request body must be valid JSON")
         market_type = body.get("market_type")
@@ -68,6 +73,7 @@ def handler(event, context):
             instance_type=body.get("instance_type"),
             storage_gb=body.get("storage_gb"),
             market_type=market_type,
+            sub_folder=body.get("sub_folder"),
         )
 
     if path == "/project-manager/list" and method == "GET":
@@ -90,15 +96,21 @@ def handler(event, context):
         return _safe(auto_delete_project, name=body.get("name"))
 
     if path == "/project-manager/modify" and method == "POST":
+
         body = _parse_body(event)
+
         if body is None:
             return _err(400, "Request body must be valid JSON")
+        
+        print(f"Received modify request: {body}")  # Debug log
+
         return _safe(
             modify_project,
             name=body.get("name"),
             repo_url=body.get("repo_url"),
             github_token=body.get("github_token"),
             instance_id=body.get("instance_id"),
+            sub_folder=body.get("sub_folder"),
         )
 
     m = _PATH_SETUP.match(path)

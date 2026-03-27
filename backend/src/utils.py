@@ -135,7 +135,7 @@ def validate_ami_id(ami_id):
         raise ValueError("ami_id must start with 'ami-'")
 
 
-def validate_project_payload(name, repo_url, github_token, instance_id, require_instance=False):
+def validate_project_payload(name, repo_url, github_token, instance_id, require_instance=False, sub_folder=None):
     if not name or not isinstance(name, str):
         raise ValueError("name is required and must be a non-empty string")
     if repo_url:
@@ -211,14 +211,16 @@ def _scan_all_projects():
 # DynamoDB project store
 # ---------------------------------------------------------------------------
 
-def create_project(name, repo_url, github_token, instance_id=None):
-    validate_project_payload(name, repo_url, github_token, instance_id, require_instance=True)
+def create_project(name, repo_url, github_token, instance_id=None, sub_folder="."):
+    
+    validate_project_payload(name, repo_url, github_token, instance_id, require_instance=True, sub_folder=sub_folder)
 
     item = {
         "name": name,
         "repo_url": repo_url or "",
         "github_token": github_token or "",
         "instance_id": instance_id or "",
+        "sub_folder": sub_folder or ".",
         # keep schema single-instance; legacy instance_ids removed
     }
 
@@ -298,7 +300,7 @@ def auto_delete_project(name):
     }
 
 
-def modify_project(name, repo_url=None, github_token=None, instance_id=None):
+def modify_project(name, repo_url=None, github_token=None, instance_id=None, sub_folder=None):
     validate_project_payload(name, repo_url, github_token, instance_id)
 
     update_expr = []
@@ -315,6 +317,9 @@ def modify_project(name, repo_url=None, github_token=None, instance_id=None):
     if instance_id is not None:
         update_expr.append("instance_id = :i")
         expr_values[":i"] = instance_id
+    if sub_folder is not None:
+        update_expr.append("sub_folder = :s")
+        expr_values[":s"] = sub_folder
 
     if not update_expr:
         raise ValueError("Nothing to update")
@@ -350,6 +355,7 @@ def auto_create_project(
     instance_type=None,
     storage_gb=None,
     market_type=None,
+    sub_folder=None,
 ):
     if instance_id is not None:
         raise ValueError("instance_id must not be provided for auto_create")
@@ -397,6 +403,7 @@ def auto_create_project(
                     {"Key": "Project", "Value": INSTANCE_TAG},
                     {"Key": "ProjectName", "Value": name},
                     {"Key": "RepoUrl", "Value": repo_url or ""},
+                    {"Key": "SubFolder", "Value": sub_folder or "."},
                 ],
             }
         ],
@@ -423,6 +430,7 @@ def auto_create_project(
             repo_url=repo_url,
             github_token=github_token,
             instance_id=new_instance_id,
+            sub_folder=sub_folder,
         )
     except Exception:
         # Best effort cleanup to avoid orphaned instances when project write fails.
@@ -501,23 +509,96 @@ def setup_project(name):
 
     # Build repo URL with token for clone
     auth_repo = repo_url.replace("https://", f"https://{github_token}@")
+    sub_folder = project.get("sub_folder", ".").strip("/")
+
     commands = [
         "set -e",
-        "WORKDIR=/tmp/eezy-ml-project",
-        "rm -rf \"$WORKDIR\"",
-        f"git clone {auth_repo} \"$WORKDIR\"",
-        f"cd \"$WORKDIR\" && git remote set-url origin {repo_url}",
+
+        f"PROJECT_NAME='{name}'",
+        f"SUB_FOLDER='{sub_folder}'",
+
+        "BASE_DIR=/opt/eezy-ml-projects",
+        "WORKDIR=\"$BASE_DIR/$PROJECT_NAME\"",
+
+        # Find existing repo
+        "if [ ! -d \"$WORKDIR/.git\" ] && [ -d \"$BASE_DIR\" ]; then "
+        "for d in \"$BASE_DIR\"/*; do "
+        "[ -d \"$d/.git\" ] || continue; "
+        "origin=$(git -C \"$d\" remote get-url origin 2>/dev/null || true); "
+        "clean_origin=$(printf '%s' \"$origin\" | sed -E 's#https://[^@]+@#https://#'); "
+        f"if [ \"$clean_origin\" = \"{repo_url}\" ] || [ \"$clean_origin\" = \"{repo_url}.git\" ]; then WORKDIR=\"$d\"; break; fi; "
+        "done; "
+        "fi",
+
+        "if [ ! -d \"$WORKDIR/.git\" ] && [ -d /app/.git ]; then WORKDIR=/app; fi",
+
+        "mkdir -p \"$BASE_DIR\"",
+
+        # Clone
+        "if [ ! -d \"$WORKDIR/.git\" ]; then "
+        "rm -rf \"$WORKDIR\"; "
+
+        "if [ \"$SUB_FOLDER\" = \".\" ]; then "
+        f"git clone {auth_repo} \"$WORKDIR\"; "
+        "else "
+        f"git clone --depth 1 --filter=blob:none --sparse {auth_repo} \"$WORKDIR\"; "
+        "cd \"$WORKDIR\"; "
+        "git sparse-checkout init --cone; "
+        "git sparse-checkout set \"$SUB_FOLDER\"; "
+        "cd - >/dev/null; "
+        "fi; "
+
+        f"cd \"$WORKDIR\" && git remote set-url origin {repo_url}; "
+
+        # Update
+        "else "
+        "cd \"$WORKDIR\"; "
+        f"git remote set-url origin {auth_repo}; "
+        "git fetch origin --prune; "
+
+        "DEFAULT_BRANCH=$(git symbolic-ref --short refs/remotes/origin/HEAD | sed 's#^origin/##'); "
+        "if [ -z \"$DEFAULT_BRANCH\" ]; then DEFAULT_BRANCH=main; fi; "
+
+        "git checkout \"$DEFAULT_BRANCH\" || git checkout -B \"$DEFAULT_BRANCH\" \"origin/$DEFAULT_BRANCH\"; "
+        "git reset --hard \"origin/$DEFAULT_BRANCH\"; "
+        "git clean -fdx; "
+
+        "if [ \"$SUB_FOLDER\" != \".\" ]; then "
+        "git sparse-checkout init --cone || true; "
+        "git sparse-checkout set \"$SUB_FOLDER\"; "
+        "fi; "
+
+        f"git remote set-url origin {repo_url}; "
+        "fi",
+
+        # Flatten subfolder
+        "if [ \"$SUB_FOLDER\" != \".\" ]; then "
+        "cd \"$WORKDIR\"; "
+        "if [ -d \"$SUB_FOLDER\" ]; then "
+        "find \"$SUB_FOLDER\" -maxdepth 1 ! -name . -exec mv {} . \\; 2>/dev/null || true; "
+        "rm -rf \"$SUB_FOLDER\"; "
+        "fi; "
+        "fi",
+
         "cd \"$WORKDIR\"",
-        "SETUP_SCRIPT=$(find . -maxdepth 6 -type f -path '*/scripts/setup.sh' | sed 's#^./##' | head -n 1)",
+
+        "echo \"Using WORKDIR=$WORKDIR\"",
+        "echo \"Commit before setup: $(git rev-parse HEAD)\"",
+
+        "SETUP_SCRIPT=$(find . -maxdepth 5 -type f -path '*/scripts/setup.sh' | sed 's#^./##' | head -n 1)",
+
         "if [ -z \"$SETUP_SCRIPT\" ]; then "
         "echo 'setup.sh not found under */scripts/setup.sh' >&2; "
         "echo '--- git remote -v ---' >&2; git remote -v >&2 || true; "
         "echo '--- git branch --show-current ---' >&2; git branch --show-current >&2 || true; "
-        "echo '--- find . -maxdepth 6 -type f -name setup.sh ---' >&2; "
-        "find . -maxdepth 6 -type f -name setup.sh >&2 || true; "
+        "echo '--- find . -maxdepth 4 -type f -name setup.sh ---' >&2; "
+        "find . -maxdepth 4 -type f -name setup.sh >&2 || true; "
         "exit 127; fi",
+
         "chmod +x \"$SETUP_SCRIPT\"",
         "./\"$SETUP_SCRIPT\"",
+
+        "echo \"Commit after setup: $(git rev-parse HEAD)\"",
     ]
 
     try:
@@ -581,6 +662,8 @@ def update_project(name):
     if not repo_url or not github_token:
         raise ValueError("repo_url and github_token are required on the project to run update")
     validate_repo_url(repo_url)
+
+    sub_folder = project.get("sub_folder", ".").strip("/")
 
     try:
         inst = ec2_client.describe_instances(InstanceIds=[instance_id])
@@ -647,10 +730,12 @@ def update_project(name):
     commands = [
         "set -e",
         f"PROJECT_NAME='{name}'",
+        f"SUB_FOLDER='{sub_folder}'",
+
         "BASE_DIR=/opt/eezy-ml-projects",
         "WORKDIR=\"$BASE_DIR/$PROJECT_NAME\"",
+
         # Prefer persistent /opt checkout paths over /app so updates survive reboot.
-        # If project-name path is missing, try any /opt checkout with matching origin URL.
         "if [ ! -d \"$WORKDIR/.git\" ] && [ -d \"$BASE_DIR\" ]; then "
         "for d in \"$BASE_DIR\"/*; do "
         "[ -d \"$d/.git\" ] || continue; "
@@ -659,27 +744,55 @@ def update_project(name):
         f"if [ \"$clean_origin\" = \"{repo_url}\" ] || [ \"$clean_origin\" = \"{repo_url}.git\" ]; then WORKDIR=\"$d\"; break; fi; "
         "done; "
         "fi",
+
         "if [ ! -d \"$WORKDIR/.git\" ] && [ -d /app/.git ]; then WORKDIR=/app; fi",
+
         "mkdir -p \"$BASE_DIR\"",
+
+        # Clone if repo doesn't exist
         "if [ ! -d \"$WORKDIR/.git\" ]; then "
         "rm -rf \"$WORKDIR\"; "
+
+        "if [ \"$SUB_FOLDER\" = \".\" ]; then "
         f"git clone {auth_repo} \"$WORKDIR\"; "
+        "else "
+        f"git clone --depth 1 --filter=blob:none --sparse {auth_repo} \"$WORKDIR\"; "
+        "cd \"$WORKDIR\"; "
+        "git sparse-checkout init --cone; "
+        "git sparse-checkout set \"$SUB_FOLDER\"; "
+        "cd - >/dev/null; "
+        "fi; "
+
         f"cd \"$WORKDIR\" && git remote set-url origin {repo_url}; "
+
+        # Update existing repo
         "else "
         "cd \"$WORKDIR\"; "
         f"git remote set-url origin {auth_repo}; "
         "git fetch origin --prune; "
+
         "DEFAULT_BRANCH=$(git symbolic-ref --short refs/remotes/origin/HEAD | sed 's#^origin/##'); "
         "if [ -z \"$DEFAULT_BRANCH\" ]; then DEFAULT_BRANCH=main; fi; "
+
         "git checkout \"$DEFAULT_BRANCH\" || git checkout -B \"$DEFAULT_BRANCH\" \"origin/$DEFAULT_BRANCH\"; "
         "git reset --hard \"origin/$DEFAULT_BRANCH\"; "
         "git clean -fdx; "
+
+        # Apply sparse checkout on update
+        "if [ \"$SUB_FOLDER\" != \".\" ]; then "
+        "git sparse-checkout init --cone || true; "
+        "git sparse-checkout set \"$SUB_FOLDER\"; "
+        "fi; "
+
         f"git remote set-url origin {repo_url}; "
         "fi",
+
         "cd \"$WORKDIR\"",
         "echo \"Using WORKDIR=$WORKDIR\"",
         "echo \"Commit before setup: $(git rev-parse HEAD)\"",
+
         "SETUP_SCRIPT=$(find . -maxdepth 5 -type f -path '*/scripts/setup.sh' | sed 's#^./##' | head -n 1)",
+
         "if [ -z \"$SETUP_SCRIPT\" ]; then "
         "echo 'setup.sh not found under */scripts/setup.sh' >&2; "
         "echo '--- git remote -v ---' >&2; git remote -v >&2 || true; "
@@ -687,8 +800,10 @@ def update_project(name):
         "echo '--- find . -maxdepth 4 -type f -name setup.sh ---' >&2; "
         "find . -maxdepth 4 -type f -name setup.sh >&2 || true; "
         "exit 127; fi",
+
         "chmod +x \"$SETUP_SCRIPT\"",
         "./\"$SETUP_SCRIPT\"",
+
         "echo \"Commit after setup: $(git rev-parse HEAD)\"",
     ]
 

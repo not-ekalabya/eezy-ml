@@ -25,7 +25,7 @@ def _fail(name, exc):
 
 def test_model_file_exists():
     model_ready = os.path.join(os.path.dirname(__file__), "model", "model.ready")
-    model_dir = os.path.join(os.path.dirname(__file__), "model", "qwen3-4b")
+    model_dir = os.path.join(os.path.dirname(__file__), "model", "qwen3-8b")
     assert os.path.exists(model_ready), f"Model marker not found at '{model_ready}'. Run init.py first."
     assert os.path.isdir(model_dir), f"Model cache not found at '{model_dir}'. Run init.py first."
     _pass("test_model_file_exists")
