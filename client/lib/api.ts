@@ -175,9 +175,23 @@ export type ProjectStatusResponse = {
   inference_url: string | null;
 };
 
+export type ProjectFetchResponse = {
+  name: string;
+  repo_url: string;
+  github_token: string;
+  instance_id: string;
+  sub_folder: string;
+};
+
 export async function getProjectStatusApi(projectName: string) {
   return request<ProjectStatusResponse>(
     `/projects/${encodeURIComponent(projectName)}/status`,
+  );
+}
+
+export async function fetchProjectApi(projectName: string) {
+  return request<ProjectFetchResponse>(
+    `/projects/${encodeURIComponent(projectName)}/fetch`,
   );
 }
 

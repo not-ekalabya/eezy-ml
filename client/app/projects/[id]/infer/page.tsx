@@ -3,7 +3,7 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { MonolithShell, sharedSideNav } from "@/app/components/monolith-shell";
-import { getProjectStatusApi, listProjectsApi, predictProjectApi } from "@/lib/api";
+import { getProjectStatusApi, listProjectsApi, predictProjectApi, fetchProjectApi } from "@/lib/api";
 
 type ProjectStatus = {
   project_name: string;
@@ -56,8 +56,6 @@ const FALLBACK_SCHEMA: RequestSchema = {
 
 const REQUEST_SCHEMA_CANDIDATE_FILES = [
   "request_schema.json",
-  "request.json",
-  "request_jaon.json",
 ];
 
 function parseRepoCoordinates(repoUrl: string): { owner: string; repo: string } | null {
@@ -157,27 +155,37 @@ function parseFeatures(mode: FeatureMode, prompt: string, arrayInput: string): s
 }
 
 async function fetchSchemaFromRepoRoot(payload: {
-  owner: string;
-  repo: string;
-  githubToken?: string;
+  name: string;
+  token?: string;
 }): Promise<{ schema: RequestSchema; sourceFile: string; authMode: "token" | "none" }> {
   const diagnostics: string[] = [];
 
+  // return format - { schema: parsed, sourceFile: fileName, authMode: auth.mode }
+
   for (const fileName of REQUEST_SCHEMA_CANDIDATE_FILES) {
-    const authAttempts: Array<{ mode: "token" | "none"; token?: string }> = payload.githubToken
-      ? [{ mode: "token", token: payload.githubToken }, { mode: "none" }]
+    const authAttempts: Array<{ mode: "token" | "none"; token?: string }> = payload.token
+      ? [{ mode: "token", token: payload.token }, { mode: "none" }]
       : [{ mode: "none" }];
 
     for (const auth of authAttempts) {
+
+      const project = await fetchProjectApi(payload.name);
+
       const headers: Record<string, string> = {
         Accept: "application/vnd.github+json",
       };
+
       if (auth.token) {
         headers.Authorization = `Bearer ${auth.token}`;
       }
 
+      const repo = project.repo_url.replace("https://github.com/", "").replace(".git", "");
+
+      const owner = repo.split("/")[0];
+      const repoName = repo.split("/")[1];
+
       const response = await fetch(
-        `https://api.github.com/repos/${payload.owner}/${payload.repo}/contents/${fileName}`,
+        `https://api.github.com/repos/${owner}/${repoName}/contents/${project.sub_folder ? `${project.sub_folder}/` : ''}${fileName}`,
         {
           headers,
           cache: "no-store",
@@ -331,11 +339,15 @@ export default function InferPage() {
 
     let cancelled = false;
 
+    // fetch request schema from GitHub repo, with fallback to built-in schema if any step fails
+
     async function fetchProjectRequestSchema() {
       try {
+
         setSchemaError(null);
         const listing = await listProjectsApi();
         const project = listing.projects.find((item) => item.name === decodedProjectId);
+
         if (!project) {
           throw new Error(`Project '${decodedProjectId}' not found`);
         }
@@ -346,10 +358,10 @@ export default function InferPage() {
         }
 
         const { schema: parsed, sourceFile, authMode } = await fetchSchemaFromRepoRoot({
-          owner: coordinates.owner,
-          repo: coordinates.repo,
-          githubToken: project.github_token || undefined,
+          name: decodedProjectId,
+          token: project.github_token || undefined,
         });
+        
         if (!cancelled) {
           setRequestSchema(parsed);
           setSchemaSource(`${coordinates.owner}/${coordinates.repo}/${sourceFile} (${authMode})`);
@@ -359,6 +371,7 @@ export default function InferPage() {
           setTopP(parsed.properties?.top_p?.default ?? 0.9);
           setEnableThinking(parsed.properties?.enable_thinking?.default ?? true);
         }
+
       } catch (e) {
         if (!cancelled) {
           setRequestSchema(FALLBACK_SCHEMA);

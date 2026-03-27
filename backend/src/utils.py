@@ -46,46 +46,17 @@ _dynamodb_resource = None
 _projects_table = None
 
 
-class _LazyProxy:
-    def __init__(self, factory):
-        self._factory = factory
+import boto3
 
-    def __getattr__(self, name):
-        return getattr(self._factory(), name)
+# Clients
+ec2_client = boto3.client("ec2", region_name="us-east-1")
+ssm_client = boto3.client("ssm", region_name="us-east-1")
 
+# DynamoDB
+dynamodb = boto3.resource("dynamodb", region_name="us-east-1")
 
-def _get_ec2_client():
-    global _ec2_client
-    if _ec2_client is None:
-        _ec2_client = boto3.client("ec2", region_name="us-east-1")
-    return _ec2_client
-
-
-def _get_ssm_client():
-    global _ssm_client
-    if _ssm_client is None:
-        _ssm_client = boto3.client("ssm", region_name="us-east-1")
-    return _ssm_client
-
-
-def _get_dynamodb_resource():
-    global _dynamodb_resource
-    if _dynamodb_resource is None:
-        _dynamodb_resource = boto3.resource("dynamodb", region_name="us-east-1")
-    return _dynamodb_resource
-
-
-def _get_projects_table():
-    global _projects_table
-    if _projects_table is None:
-        _projects_table = _get_dynamodb_resource().Table(PROJECTS_TABLE)
-    return _projects_table
-
-
-ec2_client = _LazyProxy(_get_ec2_client)
-ssm_client = _LazyProxy(_get_ssm_client)
-dynamodb = _LazyProxy(_get_dynamodb_resource)
-projects_table = _LazyProxy(_get_projects_table)
+# Table
+projects_table = dynamodb.Table(PROJECTS_TABLE)
 
 
 # ---------------------------------------------------------------------------
@@ -249,6 +220,17 @@ def list_projects():
     _project_list_cache["value"] = result
     _project_list_cache["expires_at"] = now + PROJECT_LIST_CACHE_TTL_SECONDS
     return {"projects": [dict(item) for item in result["projects"]]}
+
+def fetch_project(project_name):
+
+    project = projects_table.query(
+        KeyConditionExpression=boto3.dynamodb.conditions.Key('name').eq(project_name)
+    )
+
+    if not project.get("Items"):
+        raise ValueError(f"Project '{project_name}' does not exist")
+    
+    return project["Items"][0]
 
 
 def delete_project(name):

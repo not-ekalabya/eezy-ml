@@ -23,6 +23,7 @@ from utils import (
     get_project_logs,
     get_project_status,
     predict_project,
+    fetch_project,
 )
 
 _PATH_SETUP = re.compile(r"^/projects/([^/]+)/setup/?$")
@@ -32,6 +33,7 @@ _PATH_UPDATE = re.compile(r"^/projects/([^/]+)/update/?$")
 _PATH_LOGS = re.compile(r"^/projects/([^/]+)/logs/?$")
 _PATH_STATUS = re.compile(r"^/projects/([^/]+)/status/?$")
 _PATH_PREDICT = re.compile(r"^/projects/([^/]+)/predict/?$")
+_PATH_GET_PROJECT = re.compile(r"^/projects/([^/]+)/fetch/?$")
 
 
 def handler(event, context):
@@ -148,7 +150,12 @@ def handler(event, context):
     if m and method == "GET":
         project_name = m.group(1)
         return _safe(get_project_status, project_name)
-
+    
+    m = _PATH_GET_PROJECT.match(path)
+    if m and method == "GET":
+        project_name = m.group(1)
+        return _safe(fetch_project, project_name)
+    
     m = _PATH_PREDICT.match(path)
     if m and method == "POST":
         body = _parse_body(event)
