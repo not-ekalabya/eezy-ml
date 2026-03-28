@@ -544,11 +544,12 @@ def setup_project(name):
         # packages are installed from the SSM command 
         # TODO: If the Scripts folder exists, the user should have freedom to configure their VM.
 
+        "export DEBIAN_FRONTEND=noninteractive",
         "sudo apt-get update",
         "sudo apt-get install -y python3 python3-pip python3-venv curl",
 
         "python3 -m venv venv",
-        "source venv/bin/activate",
+        ". venv/bin/activate",
         "pip install -r requirements.txt",
 
         "eezy init",
