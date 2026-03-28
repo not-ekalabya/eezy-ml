@@ -1,4 +1,4 @@
-"""inference.py — Load cached Qwen3-4B assets and expose predict functions.
+"""inference.py — Load cached Qwen3-8B assets and expose predict functions.
 
 This module is imported by server.py and test.py. The model is loaded
 lazily on first call and cached for subsequent calls.
@@ -11,7 +11,7 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 MODELS_DIR = os.path.join(os.path.dirname(__file__), "model")
-MODEL_CACHE_DIR = os.path.join(MODELS_DIR, "qwen3-4b")
+MODEL_CACHE_DIR = os.path.join(MODELS_DIR, "qwen3-8b")
 MODEL_READY_PATH = os.path.join(MODELS_DIR, "model.ready")
 THINK_END_TOKEN_ID = 151668
 
