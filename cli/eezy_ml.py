@@ -12,7 +12,7 @@ SERVER_RESPONSE_TIMEOUT = 30
 def get_python(project_dir):
     
     """Return the venv Python executable if present, otherwise fall back to sys.executable."""
-    venv_python = project_dir / ".venv" / "Scripts" / "python.exe"
+    venv_python = project_dir / ".venv" / "bin" / "python"
 
     if venv_python.exists():
         return str(venv_python)
