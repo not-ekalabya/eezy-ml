@@ -541,10 +541,18 @@ def setup_project(name):
         "find . -maxdepth 4 -type f -name setup.sh >&2 || true; "
         "exit 127; fi",
 
-        "chmod +x \"$SETUP_SCRIPT\"",
-        "./\"$SETUP_SCRIPT\"",
+        # packages are installed from the SSM command 
+        # TODO: If the Scripts folder exists, the user should have freedom to configure their VM.
 
-        "echo \"Commit after setup: $(git rev-parse HEAD)\"",
+        "sudo apt-get update",
+        "sudo apt-get install -y python3 python3-pip python3-venv curl",
+
+        "python3 -m venv venv",
+        "source venv/bin/activate",
+        "pip install -r requirements.txt",
+
+        "eezy init",
+        "eezy start"
     ]
 
     try:
