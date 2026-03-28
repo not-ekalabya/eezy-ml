@@ -5,63 +5,57 @@ import tempfile
 from pathlib import Path
 import shutil
 
-TEMPLATE_LIBRARIES = [
-    "scikit-learn==1.6.1",
-    "datasets==4.0.0",
-    "flask==3.1.3",
-]
 
-
-def find_project_dir():
-    """Return the directory containing init.py, starting from cwd upward."""
-    current = Path.cwd()
-    for directory in [current, *current.parents]:
-        if (directory / "init.py").exists():
-            return directory
-    return None
-
+cwd = Path.cwd()
+SERVER_RESPONSE_TIMEOUT = 30
 
 def get_python(project_dir):
+    
     """Return the venv Python executable if present, otherwise fall back to sys.executable."""
     venv_python = project_dir / ".venv" / "Scripts" / "python.exe"
+
     if venv_python.exists():
         return str(venv_python)
+    
     return sys.executable
 
 
 def cmd_run_init():
-    project_dir = find_project_dir()
-    if project_dir is None:
+
+    if (cwd / "init.py").is_file():
+        python = get_python(cwd)
+        print(f"Running init.py in {cwd} (python: {python})...")
+        result = subprocess.run([python, str(cwd / "init.py")], cwd=cwd)
+
+    else:
         print("Error: Could not find init.py. Run 'eezy create <dir>' first.", file=sys.stderr)
         sys.exit(1)
-    python = get_python(project_dir)
-    print(f"Running init.py in {project_dir} (python: {python})...")
-    result = subprocess.run([python, str(project_dir / "init.py")], cwd=project_dir)
+
+    python = get_python(cwd)
+
+    print(f"Running init.py in {cwd} (python: {python})...")
+
+    result = subprocess.run([python, str(cwd / "init.py")], cwd=cwd)
+    
     sys.exit(result.returncode)
 
 
 def cmd_start(host="localhost", port=5000):
-    project_dir = find_project_dir()
-    if project_dir is None:
-        print("Error: Could not find init.py. Run 'eezy create <dir>' first.", file=sys.stderr)
-        sys.exit(1)
-
-    model_path = project_dir / "model" / "model.joblib"
-    if not model_path.exists():
-        print(
-            "Error: Model not found. Perhaps, you haven't run 'eezy init' yet.\n"
-            "       Run 'eezy init' to download data and load/train the model first.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
 
     server_url = f"http://{host}:{port}"
-    python = get_python(project_dir)
-    print(f"Starting inference server from {project_dir} (python: {python})...")
-    server_env = {**__import__('os').environ, "SERVER_HOST": "0.0.0.0", "SERVER_PORT": str(port)}
+    python = get_python(cwd)
+    print(f"Starting inference server from {cwd} (python: {python})...")
+
+
+    server_env = {
+        **__import__('os').environ, 
+        "SERVER_HOST": "0.0.0.0", 
+        "SERVER_PORT": str(port)
+    }
+
     server_proc = subprocess.Popen(
-        [python, str(project_dir / "server.py")],
-        cwd=project_dir,
+        [python, str(cwd / "server.py")],
+        cwd=cwd,
         env=server_env,
     )
 
@@ -70,7 +64,8 @@ def cmd_start(host="localhost", port=5000):
     import urllib.error
 
     print(f"Waiting for server to be ready at {server_url}...")
-    for _ in range(20):
+
+    for _ in range(SERVER_RESPONSE_TIMEOUT // 0.5):  # Check every 0.5s for up to 30s
         try:
             urllib.request.urlopen(f"{server_url}/health", timeout=1)
             break
@@ -81,16 +76,6 @@ def cmd_start(host="localhost", port=5000):
         server_proc.terminate()
         sys.exit(1)
 
-    print("Server is ready. Running tests...\n")
-    test_env = {**__import__('os').environ, "SERVER_URL": server_url}
-    test_result = subprocess.run(
-        [python, str(project_dir / "test.py")],
-        cwd=project_dir,
-        env=test_env,
-    )
-
-    print(f"\nTest {'passed' if test_result.returncode == 0 else 'failed'}.")
-    print("Server is running. Press Ctrl+C to stop.")
     try:
         server_proc.wait()
     except KeyboardInterrupt:
@@ -100,15 +85,13 @@ def cmd_start(host="localhost", port=5000):
 
 
 def cmd_create(target_dir, use_venv=True):
+    
     repo_url = "https://github.com/not-ekalabya/eezy-ml.git"
 
-    print("The following libraries will be available in the project:")
-    for lib in TEMPLATE_LIBRARIES:
-        print(f"  - {lib}")
-    print()
     print(f"Cloning /template from {repo_url} into {target_dir}...")
 
     with tempfile.TemporaryDirectory() as tmp:
+
         tmp_path = Path(tmp)
 
         result = subprocess.run(["git", "clone", "--no-checkout", repo_url, tmp])
@@ -133,17 +116,20 @@ def cmd_create(target_dir, use_venv=True):
     print(f"Project initialized in ./{target_dir}")
 
     if use_venv:
+
         venv_path = Path(target_dir) / ".venv"
         print(f"\nCreating virtual environment at {venv_path}...")
+
         subprocess.run([sys.executable, "-m", "venv", str(venv_path)], check=True)
 
         pip = venv_path / "Scripts" / "pip.exe"
         requirements = Path(target_dir) / "requirements.txt"
+
         if requirements.exists():
             print("Installing dependencies...")
             subprocess.run([str(pip), "install", "-r", str(requirements)], check=True)
 
-        print(f"Virtual environment ready. Activate with: {venv_path}\\Scripts\\activate")
+        print(f"Virtual environment ready. (Optional) Activate with: {venv_path}\\Scripts\\activate")
 
 
 def main():

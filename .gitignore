@@ -27,3 +27,4 @@ backend/.env
 
 **/logs/
 example/
+.venv
