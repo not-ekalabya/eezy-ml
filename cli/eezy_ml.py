@@ -122,14 +122,14 @@ def cmd_create(target_dir, use_venv=True):
 
         subprocess.run([sys.executable, "-m", "venv", str(venv_path)], check=True)
 
-        pip = venv_path / "Scripts" / "pip.exe"
+        pip = venv_path / "bin" / "pip"
         requirements = Path(target_dir) / "requirements.txt"
 
         if requirements.exists():
             print("Installing dependencies...")
             subprocess.run([str(pip), "install", "-r", str(requirements)], check=True)
 
-        print(f"Virtual environment ready. (Optional) Activate with: {venv_path}\\Scripts\\activate")
+        print(f"Virtual environment ready. (Optional) Activate with: {venv_path}/bin/activate")
 
 
 def main():
