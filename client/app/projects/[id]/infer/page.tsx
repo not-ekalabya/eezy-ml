@@ -676,7 +676,7 @@ export default function InferPage() {
                 min="1"
                 max="600"
                 value={timeout}
-                onChange={(e) => setTimeout(Math.max(1, parseInt(e.target.value) || 30))}
+                onChange={(e) => setTimeout(Math.max(1, parseInt(e.target.value)))}
                 disabled={querying}
                 className="w-full rounded-sm border-b border-b-transparent bg-[color:var(--surface-container-highest)] p-4 text-white placeholder:text-neutral-600 transition focus:border-b-white focus:outline-none disabled:opacity-60"
               />

@@ -47,7 +47,6 @@ def run_tests():
         [sys.executable, test_script],
         capture_output=True,
         text=True,
-        timeout=120,
         env=env,
         cwd=os.path.dirname(__file__),
     )

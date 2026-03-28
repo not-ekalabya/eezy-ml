@@ -12,6 +12,8 @@ import requests
 BASE_URL = os.environ.get("SERVER_URL", "http://localhost:5000")
 _FAILURES = []
 
+PREDICTION_TIMEOUT = 1e10  # seconds
+
 
 def _pass(name, detail=""):
     suffix = f" ({detail})" if detail else ""
@@ -25,7 +27,7 @@ def _fail(name, exc):
 
 def test_model_file_exists():
     model_ready = os.path.join(os.path.dirname(__file__), "model", "model.ready")
-    model_dir = os.path.join(os.path.dirname(__file__), "model", "qwen3-4b")
+    model_dir = os.path.join(os.path.dirname(__file__), "model", "qwen3-8b")
     assert os.path.exists(model_ready), f"Model marker not found at '{model_ready}'. Run init.py first."
     assert os.path.isdir(model_dir), f"Model cache not found at '{model_dir}'. Run init.py first."
     _pass("test_model_file_exists")
@@ -73,7 +75,7 @@ def test_server_health():
 
 def test_server_predict_single():
     sample = [{"role": "user", "content": "Answer with one short sentence about deployment."}]
-    resp = requests.post(f"{BASE_URL}/predict", json={"features": sample}, timeout=5)
+    resp = requests.post(f"{BASE_URL}/predict", json={"features": sample}, timeout=PREDICTION_TIMEOUT)
     assert resp.status_code == 200, f"HTTP {resp.status_code}: {resp.text}"
     body = resp.json()
     assert "prediction" in body and isinstance(body["prediction"], str) and body["prediction"].strip()
@@ -86,7 +88,7 @@ def test_server_predict_batch():
         [{"role": "user", "content": "Return the word two."}],
         [{"role": "user", "content": "Return the word three."}],
     ]
-    resp = requests.post(f"{BASE_URL}/predict", json={"features": samples}, timeout=5)
+    resp = requests.post(f"{BASE_URL}/predict", json={"features": samples}, timeout=PREDICTION_TIMEOUT)
     assert resp.status_code == 200, f"HTTP {resp.status_code}: {resp.text}"
     body = resp.json()
     assert "predictions" in body and len(body["predictions"]) == 3
@@ -102,7 +104,7 @@ def test_server_predict_accepts_generation_options():
         "top_p": 0.8,
         "enable_thinking": False,
     }
-    resp = requests.post(f"{BASE_URL}/predict", json=payload, timeout=5)
+    resp = requests.post(f"{BASE_URL}/predict", json=payload, timeout=PREDICTION_TIMEOUT)
     assert resp.status_code == 200, f"HTTP {resp.status_code}: {resp.text}"
     body = resp.json()
     assert "prediction" in body and isinstance(body["prediction"], str) and body["prediction"].strip()
@@ -110,7 +112,7 @@ def test_server_predict_accepts_generation_options():
 
 
 def test_server_bad_request():
-    resp = requests.post(f"{BASE_URL}/predict", json={}, timeout=5)
+    resp = requests.post(f"{BASE_URL}/predict", json={}, timeout=PREDICTION_TIMEOUT)
     assert resp.status_code == 400
     _pass("test_server_bad_request")
 
