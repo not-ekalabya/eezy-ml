@@ -281,12 +281,13 @@ export default function InferPage() {
       if (hasProperty(requestSchema, "enable_thinking")) {
         payload.enable_thinking = enableThinking;
       }
+      payload.timeout_seconds = timeout;
 
       return JSON.stringify(payload, null, 2);
     } catch {
       return "Invalid feature input. Fix input to preview request body.";
     }
-  }, [arrayFeaturesInput, enableThinking, featureMode, maxNewTokens, prompt, requestSchema, temperature, topP]);
+  }, [arrayFeaturesInput, enableThinking, featureMode, maxNewTokens, prompt, requestSchema, temperature, timeout, topP]);
 
   useEffect(() => {
     if (!decodedProjectId) {
@@ -417,6 +418,7 @@ export default function InferPage() {
       if (hasProperty(requestSchema, "enable_thinking")) {
         requestBody.enable_thinking = enableThinking;
       }
+      requestBody.timeout_seconds = timeout;
 
       const data = await predictProjectApi({
         projectName: decodedProjectId,
@@ -611,7 +613,7 @@ export default function InferPage() {
                   type="number"
                   min="1"
                   value={maxNewTokens}
-                  onChange={(e) => setMaxNewTokens(Math.max(1, parseInt(e.target.value, 10) || 96))}
+                  onChange={(e) => setMaxNewTokens(Math.max(1, parseInt(e.target.value, 10)))}
                   disabled={querying}
                   className="w-full rounded-sm border-b border-b-transparent bg-[color:var(--surface-container-highest)] p-4 text-white placeholder:text-neutral-600 transition focus:border-b-white focus:outline-none disabled:opacity-60"
                 />

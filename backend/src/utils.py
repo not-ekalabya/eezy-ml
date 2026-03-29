@@ -1446,7 +1446,7 @@ def terminate_instance(instance_id):
     }
 
 
-def _proxy_predict_via_ssm(instance_id, payload):
+def _proxy_predict_via_ssm(instance_id, payload, timeout_seconds=30):
     """Call local http://127.0.0.1:5000/predict via SSM as a network fallback."""
     try:
         ssm_info = ssm_client.describe_instance_information(
@@ -1477,7 +1477,7 @@ def _proxy_predict_via_ssm(instance_id, payload):
         "    json.dump(payload, f)",
         "PY",
         "predict_once() {",
-        "  curl -fsS --max-time 30 -H 'Content-Type: application/json' --data-binary @\"$PAYLOAD_FILE\" http://127.0.0.1:5000/predict",
+        f"  curl -fsS --max-time {int(timeout_seconds)} -H 'Content-Type: application/json' --data-binary @\"$PAYLOAD_FILE\" http://127.0.0.1:5000/predict",
         "}",
         "if RESP=$(predict_once 2>\"$ERR_FILE\"); then",
         "  printf '%s' \"$RESP\"",
@@ -1515,7 +1515,12 @@ def _proxy_predict_via_ssm(instance_id, payload):
         raise RuntimeError(f"Failed to invoke local prediction via SSM: {e}")
 
     command_id = send_resp["Command"]["CommandId"]
-    invocation = wait_for_command(command_id, instance_id, max_wait_seconds=120, delay_seconds=2)
+    invocation = wait_for_command(
+        command_id,
+        instance_id,
+        max_wait_seconds=max(120, int(timeout_seconds) + 60),
+        delay_seconds=2,
+    )
     status = invocation.get("Status", "InProgress")
     stdout = invocation.get("StandardOutputContent", "")
     stderr = invocation.get("StandardErrorContent", "")
@@ -1537,7 +1542,8 @@ def _proxy_predict_via_ssm(instance_id, payload):
         return {"prediction": raw}
 
 
-def proxy_predict(instance_id, payload):
+def proxy_predict(instance_id, payload, timeout_seconds=30):
+
     """Forward a prediction request to the Flask server on the EC2 instance."""
     instance = get_instance_info(instance_id)
     state = instance["State"]["Name"]
@@ -1558,14 +1564,14 @@ def proxy_predict(instance_id, payload):
     )
 
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
             return json.loads(resp.read().decode())
     except urllib.error.HTTPError as e:
         error_body = e.read().decode()
         raise RuntimeError(f"Prediction failed ({e.code}): {error_body}")
     except urllib.error.URLError as e:
         # Fallback: when public networking is blocked, call localhost via SSM.
-        return _proxy_predict_via_ssm(instance_id, payload)
+        return _proxy_predict_via_ssm(instance_id, payload, timeout_seconds=timeout_seconds)
 
 
 def get_project_status(project_name):
@@ -1648,8 +1654,15 @@ def predict_project(project_name, payload):
     if not isinstance(payload, dict):
         raise ValueError("Request body must be a JSON object")
 
+    timeout_seconds = payload.get("timeout_seconds", 30)
+    if not isinstance(timeout_seconds, int):
+        raise ValueError("timeout_seconds must be an integer")
+    if timeout_seconds < 1 or timeout_seconds > 1800:
+        raise ValueError("timeout_seconds must be between 1 and 1800")
+
     normalized_features = _normalize_features(payload.get("features"))
     normalized_payload = dict(payload)
+    normalized_payload.pop("timeout_seconds", None)
     normalized_payload["features"] = normalized_features
 
     project = projects_table.get_item(Key={"name": project_name}).get("Item")
@@ -1660,7 +1673,7 @@ def predict_project(project_name, payload):
     if not instance_id:
         raise ValueError(f"Project '{project_name}' has no associated instance_id")
 
-    result = proxy_predict(instance_id, normalized_payload)
+    result = proxy_predict(instance_id, normalized_payload, timeout_seconds=timeout_seconds)
     return {
         "project_name": project_name,
         "instance_id": instance_id,
