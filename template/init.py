@@ -13,10 +13,10 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 MODELS_DIR = os.path.join(os.path.dirname(__file__), "model")
-MODEL_CACHE_DIR = os.path.join(MODELS_DIR, "qwen-4b")
+MODEL_CACHE_DIR = os.path.join(MODELS_DIR, "qwen3-4b")
 MODEL_READY_PATH = os.path.join(MODELS_DIR, "model.ready")
 MODEL_META_PATH = os.path.join(MODELS_DIR, "model.meta.json")
-DEFAULT_MODEL_ID = "Qwen/Qwen-4B"
+DEFAULT_MODEL_ID = "Qwen/Qwen3-4B"
 
 
 def _download_dtype() -> torch.dtype:
@@ -74,7 +74,7 @@ def cache_model(model_id: str, force: bool = False) -> None:
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Prepare local Qwen-4B artifacts.")
+    parser = argparse.ArgumentParser(description="Prepare local Qwen3-4B artifacts.")
     parser.add_argument(
         "--model-id",
         default=os.environ.get("QWEN_MODEL_ID", DEFAULT_MODEL_ID),

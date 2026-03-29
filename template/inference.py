@@ -11,7 +11,7 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 MODELS_DIR = os.path.join(os.path.dirname(__file__), "model")
-MODEL_CACHE_DIR = os.path.join(MODELS_DIR, "qwen-4b")
+MODEL_CACHE_DIR = os.path.join(MODELS_DIR, "qwen3-4b")
 MODEL_READY_PATH = os.path.join(MODELS_DIR, "model.ready")
 THINK_END_TOKEN_ID = 151668
 
