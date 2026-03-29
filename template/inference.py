@@ -169,14 +169,11 @@ def predict(features: Any, options: Optional[Dict[str, Any]] = None) -> str:
     elapsed_time = end_time - strart_time
     print(f"Prediction completed in {elapsed_time:.2f} seconds.")
 
-    additional_info = {
+    return {
+        "content": content,
         "elapsed_time": elapsed_time,
         "token_count": len(output_ids),
     }
-
-    content["additional_info"] = additional_info
-        
-    return content
 
 
 def predict_batch(samples: list, options: Optional[Dict[str, Any]] = None) -> list:

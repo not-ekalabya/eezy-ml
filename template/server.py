@@ -73,8 +73,9 @@ def predict_endpoint():
             predictions = predict_batch(features, options=options)
             return jsonify({"predictions": predictions})
         else:
-            prediction = predict(features, options=options)
-            return jsonify({"prediction": prediction})
+            result = predict(features, options=options)
+            # result is now a dict with {"content": "...", "elapsed_time": ..., "token_count": ...}
+            return jsonify({"prediction": result})
     except (ValueError, FileNotFoundError) as exc:
         return jsonify({"error": str(exc)}), 422
 

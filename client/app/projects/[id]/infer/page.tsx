@@ -241,11 +241,25 @@ export default function InferPage() {
   const [error, setError] = useState<string | null>(null);
 
   function parsePredictionText(value: unknown): string {
-    if (typeof value !== "string") {
+    let text: string | null = null;
+
+    // Handle dict format: { content: string, elapsed_time, token_count }
+    if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+      const obj = value as Record<string, unknown>;
+      if (typeof obj.content === "string") {
+        text = obj.content;
+      }
+    }
+    // Handle string format (backwards compatibility)
+    else if (typeof value === "string") {
+      text = value;
+    }
+
+    if (!text) {
       return "";
     }
 
-    const trimmed = value.trim();
+    const trimmed = text.trim();
     if (!trimmed) {
       return "";
     }
@@ -497,7 +511,12 @@ export default function InferPage() {
             : status.service_status;
   const parsedPrediction = parsePredictionText(result?.prediction);
   const parsedPredictions = Array.isArray(result?.predictions)
-    ? result.predictions.map((item) => String(item)).join("\n")
+    ? result.predictions.map((item) => {
+        if (typeof item === "object" && item !== null && "content" in item) {
+          return (item as Record<string, unknown>).content;
+        }
+        return String(item);
+      }).join("\n")
     : "";
 
   return (
