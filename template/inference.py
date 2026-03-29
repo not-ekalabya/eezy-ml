@@ -5,6 +5,7 @@ lazily on first call and cached for subsequent calls.
 """
 
 import os
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import torch
@@ -112,6 +113,9 @@ def load_model() -> Tuple[Any, Any]:
 
 
 def predict(features: Any, options: Optional[Dict[str, Any]] = None) -> str:
+
+    strart_time = time.perf_counter()
+
     """Run text generation for a single chat payload (message list)."""
     messages = _normalize_messages(features)
     generation_options = _normalize_generation_options(options)
@@ -159,6 +163,19 @@ def predict(features: Any, options: Optional[Dict[str, Any]] = None) -> str:
     content = tokenizer.decode(output_ids[think_end_idx:], skip_special_tokens=True).strip()
     if not content:
         content = tokenizer.decode(output[0], skip_special_tokens=True).strip()
+
+    end_time = time.perf_counter()
+
+    elapsed_time = end_time - strart_time
+    print(f"Prediction completed in {elapsed_time:.2f} seconds.")
+
+    additional_info = {
+        "elapsed_time": elapsed_time,
+        "token_count": len(output_ids),
+    }
+
+    content["additional_info"] = additional_info
+        
     return content
 
 
