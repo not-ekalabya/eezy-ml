@@ -1,17 +1,20 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { MonolithShell, sharedSideNav } from "@/app/components/monolith-shell";
 import { MonolithIcon } from "@/app/components/monolith-icon";
 import {
   BackendProject,
+  getProjectLogsApi,
   getProjectStatusApi,
   listProjectsApi,
   startProjectApi,
   stopProjectApi,
   updateProjectApi,
 } from "@/lib/api";
+
+const TERMINAL_STATUSES = new Set(["Success", "Failed", "TimedOut", "Cancelled"]);
 
 type UiProject = {
   id: string;
@@ -63,6 +66,14 @@ function inferType(name: string): string {
   return "microservice";
 }
 
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function toUtf8ByteLength(value: string) {
+  return new TextEncoder().encode(value).length;
+}
+
 function mapProject(project: BackendProject): UiProject {
   return {
     id: project.name,
@@ -80,6 +91,18 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [actingProjectId, setActingProjectId] = useState<string | null>(null);
+  const [logProjectId, setLogProjectId] = useState<string | null>(null);
+  const [updateStatus, setUpdateStatus] = useState<string | null>(null);
+  const [updateLogs, setUpdateLogs] = useState("");
+
+  const updateLogsRef = useRef<HTMLPreElement | null>(null);
+
+  useEffect(() => {
+    if (!updateLogsRef.current) {
+      return;
+    }
+    updateLogsRef.current.scrollTop = updateLogsRef.current.scrollHeight;
+  }, [updateLogs]);
 
   const fetchProjects = useCallback(async () => {
     const response = await listProjectsApi();
@@ -153,20 +176,106 @@ export default function Home() {
     }
   }
 
+  function appendUpdateLogs(chunk: string) {
+    setUpdateLogs((prev) => prev + chunk);
+  }
+
+  async function streamUpdateLogs(projectName: string, commandId: string, startByte: number) {
+    const pollSeconds = 2;
+    const timeoutMs = 30 * 60 * 1000;
+    const deadline = Date.now() + timeoutMs;
+    let nextByte = startByte;
+    let idlePolls = 0;
+    let lastStatus = "Pending";
+
+    while (Date.now() < deadline) {
+      const payload = await getProjectLogsApi({
+        projectName,
+        commandId,
+        startByte: nextByte,
+      });
+
+      const chunk = payload.logs || "";
+      const status = payload.command_status || "Pending";
+
+      if (chunk) {
+        appendUpdateLogs(chunk);
+        nextByte = payload.next_byte;
+        idlePolls = 0;
+      } else {
+        idlePolls += 1;
+      }
+
+      if (status !== lastStatus) {
+        appendUpdateLogs(`\n[command status: ${status}]\n`);
+        lastStatus = status;
+        setUpdateStatus(status);
+      }
+
+      if (TERMINAL_STATUSES.has(status) && idlePolls >= 2) {
+        return {
+          status,
+          commandResponseCode: payload.command_response_code,
+          commandStderr: payload.command_stderr,
+        };
+      }
+
+      await sleep(pollSeconds * 1000);
+    }
+
+    return {
+      status: "TimedOut",
+      commandResponseCode: null,
+      commandStderr: "Client log stream timed out",
+    };
+  }
+
   async function onUpdateProject(project: UiProject) {
     try {
       setActingProjectId(project.id);
       setError(null);
       setActionMessage(null);
+      setLogProjectId(project.id);
+      setUpdateLogs("");
+      setUpdateStatus("Invoking update");
+      appendUpdateLogs(`[update] Invoking update for '${project.id}'.\n`);
 
       const result = await updateProjectApi(project.id);
+      setUpdateStatus(result.status || "InProgress");
+      appendUpdateLogs(`[update] Command ${result.command_id} accepted with status ${result.status}.\n`);
+
+      if (result.logs) {
+        appendUpdateLogs(result.logs);
+      }
+
+      if (!result.command_id) {
+        throw new Error("Update response did not include command_id");
+      }
+
+      appendUpdateLogs(`\n[update] Streaming logs for command ${result.command_id}...\n`);
+
+      const streamResult = await streamUpdateLogs(
+        project.id,
+        result.command_id,
+        toUtf8ByteLength(result.logs || ""),
+      );
+
       const mapped = await fetchProjects();
       setProjects(mapped);
-      setActionMessage(
-        `Project '${project.id}' update invoked (${result.status}) with command ${result.command_id}.`,
-      );
+
+      if (streamResult.status !== "Success") {
+        const stderr = streamResult.commandStderr ? `\n${streamResult.commandStderr}` : "";
+        throw new Error(`Update failed with status ${streamResult.status}.${stderr}`);
+      }
+
+      setUpdateStatus("Success");
+      setActionMessage(`Project '${project.id}' updated successfully.`);
+      appendUpdateLogs("\n[update] Completed successfully.\n");
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to update project");
+      const message = e instanceof Error ? e.message : "Failed to update project";
+      setUpdateStatus("Failed");
+      setError(message);
+      appendUpdateLogs(`\n[error] ${message}\n`);
     } finally {
       setActingProjectId(null);
     }
@@ -228,6 +337,32 @@ export default function Home() {
             {actionMessage ? (
               <div className="rounded-lg border border-white/20 bg-[color:var(--surface-container-low)] px-6 py-4 text-sm text-white/80">
                 {actionMessage}
+              </div>
+            ) : null}
+
+            {logProjectId ? (
+              <div className="rounded-lg border border-white/10 bg-[color:var(--surface-container-low)] p-4">
+                <div className="mb-3 flex items-center justify-between gap-4">
+                  <div>
+                    <p className="text-sm font-medium text-white">Update logs: {logProjectId}</p>
+                    <p className="text-xs text-[color:var(--on-surface-variant)]">
+                      {updateStatus || "Waiting for command status"}
+                    </p>
+                  </div>
+                  <MonolithIcon
+                    name="sync"
+                    className={[
+                      "h-5 w-5 text-[color:var(--on-surface-variant)]",
+                      actingProjectId === logProjectId ? "animate-spin" : "",
+                    ].join(" ")}
+                  />
+                </div>
+                <pre
+                  ref={updateLogsRef}
+                  className="max-h-80 overflow-auto whitespace-pre-wrap rounded bg-[color:var(--surface-container-lowest)] p-4 text-xs leading-relaxed text-white/80"
+                >
+                  {updateLogs || "Waiting for logs..."}
+                </pre>
               </div>
             ) : null}
 
