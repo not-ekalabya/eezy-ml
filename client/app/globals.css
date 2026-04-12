@@ -19,13 +19,13 @@
 @theme inline {
   --color-background: var(--surface);
   --color-foreground: var(--on-surface);
-  --font-sans: var(--font-inter);
+  --font-sans: ui-sans-serif, system-ui, sans-serif;
 }
 
 body {
   background: radial-gradient(circle at 10% 10%, #1b1a1a 0%, #131313 55%);
   color: var(--on-surface);
-  font-family: var(--font-inter), "Inter", sans-serif;
+  font-family: ui-sans-serif, system-ui, sans-serif;
 }
 
 .shell-grid {
