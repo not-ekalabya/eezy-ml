@@ -104,6 +104,15 @@ export type StartProjectResponse = {
   logs?: string;
 };
 
+export type UpdateProjectResponse = {
+  message: string;
+  command_id: string;
+  status: string;
+  stdout: string;
+  stderr: string;
+  logs: string;
+};
+
 export type ProjectLogsResponse = {
   logs: string;
   start_byte: number;
@@ -126,6 +135,15 @@ export async function setupProjectApi(projectName: string) {
 export async function startProjectApi(projectName: string) {
   return request<StartProjectResponse>(
     `/projects/${encodeURIComponent(projectName)}/start`,
+    {
+      method: "POST",
+    },
+  );
+}
+
+export async function updateProjectApi(projectName: string) {
+  return request<UpdateProjectResponse>(
+    `/projects/${encodeURIComponent(projectName)}/update`,
     {
       method: "POST",
     },

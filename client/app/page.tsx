@@ -10,6 +10,7 @@ import {
   listProjectsApi,
   startProjectApi,
   stopProjectApi,
+  updateProjectApi,
 } from "@/lib/api";
 
 type UiProject = {
@@ -152,6 +153,25 @@ export default function Home() {
     }
   }
 
+  async function onUpdateProject(project: UiProject) {
+    try {
+      setActingProjectId(project.id);
+      setError(null);
+      setActionMessage(null);
+
+      const result = await updateProjectApi(project.id);
+      const mapped = await fetchProjects();
+      setProjects(mapped);
+      setActionMessage(
+        `Project '${project.id}' update invoked (${result.status}) with command ${result.command_id}.`,
+      );
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Failed to update project");
+    } finally {
+      setActingProjectId(null);
+    }
+  }
+
   const hasProjects = useMemo(() => projects.length > 0, [projects.length]);
 
   return (
@@ -281,6 +301,15 @@ export default function Home() {
                   >
                     <MonolithIcon name="search" className="h-[18px] w-[18px]" />
                   </Link>
+                  <button
+                    type="button"
+                    onClick={() => onUpdateProject(project)}
+                    disabled={actingProjectId === project.id || !project.instanceId || project.status !== "Active"}
+                    title={!project.instanceId ? "No instance assigned" : project.status !== "Active" ? "Start project before updating" : "Update project from repository"}
+                    className="rounded p-2 text-[color:var(--on-surface-variant)] transition hover:bg-[color:var(--surface-bright)] hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    <MonolithIcon name="sync" className="h-[18px] w-[18px]" />
+                  </button>
                   <Link
                     href={`/projects/${encodeURIComponent(project.id)}/edit`}
                     className="rounded p-2 text-[color:var(--on-surface-variant)] transition hover:bg-[color:var(--surface-bright)] hover:text-white"

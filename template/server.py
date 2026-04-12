@@ -32,7 +32,7 @@ def _is_batch_payload(features):
 
 @app.route("/health", methods=["GET"])
 def health():
-    return jsonify({"status": "ok - real-time logging <test-6>!"})
+    return jsonify({"status": "ok - real-time logging <test-7>!"})
 
 
 @app.route("/test", methods=["GET"])
